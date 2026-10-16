@@ -20,7 +20,7 @@
 | `LICENSE`（MIT）/ `README.md` / `CHANGELOG.md` | 就绪 |
 | 本地 git 仓库 | 已 `git init` 并完成首次提交 |
 
-只有三件事只能由你来做：**建远程仓库、推送、提 PR**。
+只有三件事只能由你来做：**建远程仓库、推送、在社区目录站提交**。
 
 先确认本地一切正常：
 
@@ -123,102 +123,61 @@ gh release create 1.0.0 \
 
 ---
 
-## 5. 提交到 Obsidian 社区插件市场
+## 5. 提交到 Obsidian 社区目录
 
-### 5.1 Fork 并克隆
+> **提交方式已经变了**：`obsidianmd/obsidian-releases` 已**关闭 Pull Request**
+> （打开 compare 页会看到 *An owner of this repository has disabled the ability to open
+> pull requests.*），社区插件改为在 **https://community.obsidian.md** 提交。
+> 不要再往那个仓库提 PR，也不要手动改 `community-plugins.json`——目录站会自己处理。
 
-在浏览器打开 https://github.com/obsidianmd/obsidian-releases ，
-点右上角 **Fork**。然后：
+### 5.1 登录
 
-```bash
-cd /tmp
-git clone git@github.com:MetaKnow/obsidian-releases.git
-cd obsidian-releases
-git remote add upstream https://github.com/obsidianmd/obsidian-releases.git
-```
+1. 打开 https://community.obsidian.md
+2. 右上角 **Sign in**，用 **Obsidian 账号**登录（没有就现场注册）
 
-### 5.2 在 `community-plugins.json` 末尾追加一条
+登录后落在你的 **Community profile** 页。
 
-用编辑器打开 `community-plugins.json`（这是个 9000 多行的数组），
-在**最后一个 `}` 后面加一个英文逗号**，然后插入：
+### 5.2 关联 GitHub 账号（不关联就不能提交）
 
-```json
-  {
-    "id": "pdf-excerpt",
-    "name": "PDF Excerpt",
-    "author": "MetaKnow",
-    "description": "Right-click selected text in a PDF to excerpt it into a per-PDF markdown note. Excerpts stay highlighted in the PDF, duplicates are blocked, and a side panel can export them",
-    "repo": "MetaKnow/obsidian-pdf-excerpt"
-  }
-```
+在 profile 页的 **GitHub** 一栏点 **Connect**，跳转 GitHub 授权（只读取公开资料，
+用来验证仓库归属）。要用**拥有本仓库的那个 GitHub 账号**授权。
 
-字段要求（照抄上面的就行，但知道规则以后改描述不会踩坑）：
+顺便打开 **Action required notifications**，之后自动校验失败会发邮件通知你。
 
-- `id` 必须和 `manifest.json` 的 `id` 完全一致，且**不能包含 `obsidian`**
-- `name` 里**不能出现 `Obsidian`** 这个词
-- `description` 里**不能出现 `Obsidian`**，也不能以句号结尾（市场页会自己加）
-- `repo` 是 `用户名/仓库名`，指向上面第 1 步建的仓库
-- **描述不要用 Markdown**，就是纯文本一行
-- **数组顺序无所谓**，追加到末尾即可（很多人以为要按字母排序，不用）
+### 5.3 新增插件
 
-验证 JSON 没写坏（这个命令必须有输出且能解析成功）：
+左侧栏 **Plugins** → **New plugin**，填：
 
-```bash
-python3 -c "import json;d=json.load(open('community-plugins.json'));print(len(d),'plugins OK');print([p for p in d if p['id']=='pdf-excerpt'])"
-```
+| 字段 | 值 |
+| --- | --- |
+| GitHub repository URL | `https://github.com/MetaKnow/obsidian-pdf-excerpt` |
+| Owner | Myself |
 
-### 5.3 提交并推送
+勾选同意 Developer policies 与后续维护承诺 → **Submit**。
 
-```bash
-git add community-plugins.json
-git commit -m "Add plugin: PDF Excerpt"
-git push origin master      # 如果分支是 main 就写 main
-```
+### 5.4 提交前必须同时成立的前提
 
-### 5.4 开 PR
+目录站读取的是**默认分支 HEAD 上的 `manifest.json`**，再按 manifest 里的 `version`
+去找对应 tag 的 Release 下载文件，所以这三条缺一不可：
 
-回到你 fork 的页面，应该会出现 **Compare & pull request** 按钮。点它。
+- [ ] `manifest.json` 在默认分支上且准确（`id: pdf-excerpt`、`version: 1.0.0`）
+- [ ] 存在 tag 与 `version` 一字不差的 Release（`1.0.0`）
+- [ ] Release 里带着 `main.js`、`manifest.json`、`styles.css`
 
-- **标题**：`Add plugin: PDF Excerpt`
-- **正文**：GitHub 会自动套用模板。如果模板给出
-  `Please switch to Preview and select one of the following links: Community Plugin / Community Theme`，
-  就切到 **Preview** 标签页，点 **Community Plugin**，它会填入正式模板。
-  按模板勾选即可，典型内容是：
+命名规则（表单里填的描述同样受约束）：
 
-  ```
-  # I am submitting a new Community Plugin
+- `id` 必须和 `manifest.json` 一致，**不能包含 `obsidian`**，且全局唯一
+- `name` 和描述里**不能出现 `Obsidian`** 这个词
+- `id` 一旦发布就**不能再改**（仓库名可以随便改）
 
-  ## Repo URL
-  https://github.com/MetaKnow/obsidian-pdf-excerpt
+### 5.5 自动校验与后续
 
-  ## Release Checklist
-  - [x] I have tested the plugin on
-    - [x] Windows
-    - [x] macOS
-    - [ ] Linux
-    - [ ] Android
-    - [ ] iOS
-  - [x] My GitHub release contains all required files
-    - [x] main.js
-    - [x] manifest.json
-    - [x] styles.css (optional)
-  - [x] GitHub release name matches the exact version number specified in my manifest.json
-  - [x] The `id` in my `manifest.json` matches the `id` in the `community-plugins.json` file
-  - [x] My README.md describes the plugin's purpose and provides clear usage instructions
-  - [x] I have read the developer policies and my plugin complies with them
-  ```
+提交后目录站会立刻自动校验，结果直接显示在条目上：
 
-  > 本插件是 `isDesktopOnly: true`，所以移动端那几项**留空不勾**是正确的，
-  > 不要为了好看勾上——审核会核对 `manifest.json`。
+- 有问题 → **改仓库 → 发布一个版本号递增的新 Release**（不是开新 PR）
+- 全部通过并被审核后，用户就能在 Obsidian 里搜索安装
 
-**只提交你的插件这一条记录**，不要顺手改别的插件或者格式化整个文件，
-否则 diff 会很乱，PR 容易被要求重做。
-
-之后就是等。Obsidian 团队一般几天内处理；合并后你会在插件市场里看到它，
-大约几小时后刷新可用。合并时官方会把你的条目改成
-`"author": "MetaKnow"` 这类规范化形式，属于正常操作。
-
----
+之后每次发新版本都**不需要**再回来提交一次，见下面第 7 节。
 
 ## 6. 审核常见被拒原因（发布前自查）
 
