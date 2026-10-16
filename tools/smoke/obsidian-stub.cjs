@@ -132,8 +132,9 @@ class Vault extends Emitter {
 		return `app://local/${encodeURIComponent(file.path)}`;
 	}
 
-	async delete(file) {
+	async delete(file, force = false) {
 		this.files.delete(file.path);
+		this.lastDelete = { path: file.path, force };
 		this.trigger("delete", file);
 	}
 }
@@ -185,6 +186,22 @@ class FileManager {
 		const target = file.path.replace(/\.md$/, "");
 		const body = alias ? `[[${target}${subpath}|${alias}]]` : `[[${target}${subpath}]]`;
 		return body;
+	}
+
+	/** Mirrors Obsidian: moves the file and keeps the parent folder in place. */
+	async renameFile(file, newPath) {
+		const target = normalizePath(newPath);
+		const slash = target.lastIndexOf("/");
+		if (slash > 0) {
+			const folder = target.slice(0, slash);
+			if (!this.app.vault.folders.has(folder)) await this.app.vault.createFolder(folder);
+		}
+		this.app.vault.files.delete(file.path);
+		file.path = target;
+		file.name = target.slice(slash + 1);
+		file.basename = file.name.replace(/\.[^.]+$/, "");
+		this.app.vault.files.set(target, file);
+		this.app.vault.trigger("rename", file, file.path);
 	}
 }
 

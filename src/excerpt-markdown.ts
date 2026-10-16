@@ -152,6 +152,13 @@ export function formatTimestamp(ts: number): string {
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** `YYYYMMDDHHmmss` — second precision, safe inside a file name. */
+export function fileStamp(ts: number): string {
+	const d = new Date(ts);
+	const p = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 export function round4(n: number): number {
 	return Math.round(n * 10000) / 10000;
 }

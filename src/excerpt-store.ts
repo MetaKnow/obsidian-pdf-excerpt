@@ -1,10 +1,11 @@
 /**
  * Persistence layer: one markdown note per PDF.
  *
- * All notes live directly in `<excerptFolder>` (no subfolders), named after the
- * PDF's basename. When two PDFs share a basename the note is disambiguated with
- * the PDF's own parent folder name, then with a short path hash, so the mapping
- * stays deterministic and collision-free without nesting directories.
+ * Every PDF gets a folder of its own under `<excerptFolder>`, named after the
+ * PDF's basename, and holds `<pdf name>.md` plus everything that belongs to that
+ * PDF (screenshots today). When two PDFs share a basename the folder is
+ * disambiguated with the PDF's own parent folder name, then with a short path
+ * hash, so the mapping stays deterministic and collision-free.
  */
 
 import { App, TFile, TFolder, normalizePath } from "obsidian";
@@ -118,23 +119,51 @@ export class ExcerptStore {
 
 	/* ---------------- paths ---------------- */
 
+	/**
+	 * `<excerptFolder>/<pdf name>/<pdf name>.md` — every PDF gets its own folder,
+	 * which also holds that PDF's screenshots. Same-basename PDFs are
+	 * disambiguated by folder name, so no two PDFs share a note.
+	 */
 	notePathFor(pdf: TFile): string {
-		const folder = (this.getSettings().excerptFolder ?? "").trim();
-		const normalizedFolder = folder ? normalizePath(folder) : "";
+		const normalizedFolder = this.excerptFolder();
 		const name = sanitizeFileName(baseName(pdf.path)) || "PDF";
-		const hint = this.folderHint(pdf);
-		const hash = shortHash(pdf.path);
+		const dirs = this.folderCandidates(pdf, name);
 
-		const candidates = [`${name}.md`];
-		if (hint) candidates.push(`${name} (${hint}).md`, `${name} (${hint}-${hash}).md`);
-		candidates.push(`${name} (${hash}).md`);
-
-		for (const candidate of candidates) {
-			const path = normalizePath([normalizedFolder, candidate].filter(Boolean).join("/"));
+		for (const dir of dirs) {
+			const path = this.joinNotePath(normalizedFolder, dir, name);
 			if (this.ownsNotePath(path, pdf)) return path;
 		}
 		// Unreachable in practice: the hash candidate is unique to this PDF.
-		return normalizePath([normalizedFolder, `${name} (${hash}).md`].filter(Boolean).join("/"));
+		return this.joinNotePath(normalizedFolder, dirs[dirs.length - 1], name);
+	}
+
+	/**
+	 * The folder that holds this PDF's note — screenshots and any other file that
+	 * belongs to the PDF go here too, so a PDF's material stays together.
+	 */
+	noteFolderFor(pdf: TFile): string {
+		const path = this.notePathFor(pdf);
+		const cut = path.lastIndexOf("/");
+		return cut === -1 ? "" : path.slice(0, cut);
+	}
+
+	private excerptFolder(): string {
+		const folder = (this.getSettings().excerptFolder ?? "").trim();
+		return folder ? normalizePath(folder) : "";
+	}
+
+	private joinNotePath(folder: string, dir: string, name: string): string {
+		return normalizePath([folder, dir, `${name}.md`].filter(Boolean).join("/"));
+	}
+
+	/** Folder names to try, most readable first; the last is unique to this PDF. */
+	private folderCandidates(pdf: TFile, name: string): string[] {
+		const hint = this.folderHint(pdf);
+		const hash = shortHash(pdf.path);
+		const dirs = [name];
+		if (hint && hint !== name) dirs.push(`${name} (${hint})`, `${name} (${hint}-${hash})`);
+		dirs.push(`${name} (${hash})`);
+		return dirs;
 	}
 
 	/** The PDF's own parent folder name, used only to disambiguate a clash. */
@@ -312,8 +341,14 @@ export class ExcerptStore {
 		const existedBefore = this.app.vault.getAbstractFileByPath(path) instanceof TFile;
 		const data = await this.load(pdf, { fresh: true });
 
+		// Screenshots are never deduplicated, so the id must be unique even when
+		// the same PNG is inserted twice in the same millisecond.
+		let id = `e${shortHash(`${page}\u0000${imagePath}\u0000${Date.now()}`)}`;
+		let salt = 1;
+		while (data.excerpts.some((e) => e.id === id)) id = `e${shortHash(`${page}\u0000${imagePath}\u0000${Date.now()}\u0000${salt++}`)}`;
+
 		const excerpt: Excerpt = {
-			id: `e${shortHash(`${page}\u0000${imagePath}\u0000${Date.now()}`)}`,
+			id,
 			page,
 			text: "",
 			rects: [],
@@ -329,14 +364,62 @@ export class ExcerptStore {
 		return { status: "added", noteFile, noteCreated: !existedBefore, added: [excerpt], duplicates: 0 };
 	}
 
-	async removeExcerpt(pdf: TFile, id: string): Promise<boolean> {
+	/** Removes one excerpt and returns it, so the caller can clean up its file. */
+	async removeExcerpt(pdf: TFile, id: string): Promise<Excerpt | null> {
 		const data = await this.load(pdf, { fresh: true });
 		const index = data.excerpts.findIndex((e) => e.id === id);
-		if (index < 0) return false;
-		data.excerpts.splice(index, 1);
+		if (index < 0) return null;
+		const [removed] = data.excerpts.splice(index, 1);
 		data.updated = Date.now();
 		await this.save(pdf, data);
-		return true;
+		return removed;
+	}
+
+	/**
+	 * Moves notes written by the older flat layout into their per-PDF folder.
+	 * Only notes sitting directly in the excerpt folder are touched.
+	 */
+	async migrateFlatNotes(): Promise<{ moved: number; skipped: number }> {
+		const folder = this.excerptFolder();
+		if (!folder) return { moved: 0, skipped: 0 };
+
+		let moved = 0;
+		let skipped = 0;
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (!file.path.startsWith(`${folder}/`)) continue;
+			if (file.path.slice(folder.length + 1).includes("/")) continue; // already nested
+
+			let data: ExcerptFileData;
+			try {
+				data = parseExcerptFile(await this.app.vault.cachedRead(file));
+			} catch {
+				continue;
+			}
+			if (!data.excerpts.length || !data.source) {
+				skipped++;
+				continue;
+			}
+
+			const name = sanitizeFileName(file.basename) || "PDF";
+			const target = normalizePath(`${folder}/${name}/${name}.md`);
+			if (target === file.path) continue;
+			if (this.app.vault.getAbstractFileByPath(target) instanceof TFile) {
+				skipped++;
+				continue;
+			}
+
+			try {
+				await ensureVaultFolder(this.app, `${folder}/${name}`);
+				await this.app.fileManager.renameFile(file, target);
+				this.cache.delete(file.path);
+				this.invalidate(target);
+				moved++;
+			} catch (error) {
+				console.error(`[pdf-excerpt] 移动摘录笔记失败：${file.path}`, error);
+				skipped++;
+			}
+		}
+		return { moved, skipped };
 	}
 
 	async updateExcerpt(pdf: TFile, id: string, patch: Partial<Pick<Excerpt, "text" | "page">>): Promise<boolean> {

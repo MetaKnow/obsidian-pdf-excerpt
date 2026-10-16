@@ -268,7 +268,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 	await check("onload() completes and registers everything", async () => {
 		await plugin.onload();
-		assert.equal(plugin.commands.length, 10, "commands registered");
+		assert.equal(plugin.commands.length, 11, "commands registered");
 		assert.equal(plugin.views.length, 1, "sidebar view registered");
 		assert.equal(plugin.settingTabs.length, 1, "settings tab registered");
 		assert.equal(plugin.ribbonIcons.length, 1, "left ribbon icon registered");
@@ -320,14 +320,14 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		assert.equal(evt.defaultPrevented, false, "event untouched");
 	});
 
-	await check("the excerpt lands flat in 摘录知识库/<pdf>.md with a clean body", async () => {
+	await check("the excerpt lands in 摘录知识库/<pdf>/<pdf>.md with a clean body", async () => {
 		setLineRects(LINE_RECTS);
 		selectRange(parts.span1, 4, parts.span2, 9);
 		rightClick(parts.span2);
 		await menuItem("加入摘录").callback();
 		await tick();
 
-		const notePath = "摘录知识库/Attention Is Full.md";
+		const notePath = "摘录知识库/Attention Is Full/Attention Is Full.md";
 		const note = app.vault.files.get(notePath);
 		assert.ok(note, `note exists; files: ${[...app.vault.files.keys()].join(", ")}`);
 
@@ -407,7 +407,8 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 	await check("a note written by 1.0.0 is migrated on the next save", async () => {
 		// The user already has notes like this, with the geometry in a comment.
 		const legacyPdf = await app.vault.create("papers/Legacy.pdf", "%PDF-1.4 fake");
-		const legacyPath = "摘录知识库/Legacy.md";
+		await app.vault.createFolder("摘录知识库/Legacy");
+		const legacyPath = "摘录知识库/Legacy/Legacy.md";
 		await app.vault.create(
 			legacyPath,
 			[
@@ -445,21 +446,52 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		assert.equal(meta.rects[0][0], 0.2);
 	});
 
-	await check("two same-named PDFs get separate notes with no subfolder", async () => {
+	await check("two same-named PDFs each get their own subfolder", async () => {
 		await app.vault.createFolder("archive");
 		const other = await app.vault.create("archive/Attention Is Full.pdf", "%PDF-1.4 fake");
 
 		const mine = plugin.store.notePathFor(pdf);
 		const theirs = plugin.store.notePathFor(other);
 
-		assert.equal(mine, "摘录知识库/Attention Is Full.md");
+		assert.equal(mine, "摘录知识库/Attention Is Full/Attention Is Full.md");
 		assert.notEqual(theirs, mine, "the clash must not reuse the first PDF's note");
-		assert.ok(!/^摘录知识库\/.+\//.test(theirs), `no subfolder expected, got ${theirs}`);
-		assert.ok(theirs.startsWith("摘录知识库/Attention Is Full ("), `got ${theirs}`);
+		assert.equal(
+			plugin.store.noteFolderFor(pdf),
+			"摘录知识库/Attention Is Full",
+			"screenshots share the note's folder",
+		);
+		assert.ok(
+			theirs.startsWith("摘录知识库/Attention Is Full (archive)/"),
+			`the clash is disambiguated by folder name, got ${theirs}`,
+		);
+		assert.equal(plugin.store.noteFolderFor(other), "摘录知识库/Attention Is Full (archive)");
 
 		// The mapping must not depend on call order.
 		assert.equal(plugin.store.notePathFor(other), theirs, "clashing PDF keeps its path");
 		assert.equal(plugin.store.notePathFor(pdf), mine, "original PDF keeps its path");
+	});
+
+	await check("the 整理 command moves flat notes into their per-PDF folder", async () => {
+		// `摘录知识库/Stale.md` was written by the older flat layout above.
+		assert.ok(app.vault.files.has("摘录知识库/Stale.md"), "a flat note is present to tidy");
+
+		const command = plugin.commands.find((c) => c.id === "tidy-excerpt-notes-into-folders");
+		assert.ok(command, "the tidy command is registered");
+		command.callback();
+		await tick();
+		await tick();
+
+		assert.ok(!app.vault.files.has("摘录知识库/Stale.md"), "the flat note is gone");
+		const moved = app.vault.files.get("摘录知识库/Stale/Stale.md");
+		assert.ok(
+			moved,
+			`note moved into its own folder; files: ${[...app.vault.files.keys()].join(", ")}`,
+		);
+		assert.match(moved._content, /> stale text/, "the content survived the move");
+		assert.ok(
+			!app.vault.files.has("摘录知识库/Attention Is Full/Attention Is Full.md.md"),
+			"already-nested notes are left alone",
+		);
 	});
 
 	await check("excerpting the same passage again is refused as a duplicate", async () => {
@@ -473,7 +505,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		assert.ok(noticeMatching(/已经摘录过/), `notices: ${obsidianStub.Notice.instances.map((n) => n.message).join(" | ")}`);
 		assert.equal((await plugin.store.excerptsFor(pdf)).length, 1, "still exactly one excerpt");
 		assert.ok(
-			!app.vault.files.get("摘录知识库/Attention Is Full.md")._content.includes("<!--"),
+			!app.vault.files.get("摘录知识库/Attention Is Full/Attention Is Full.md")._content.includes("<!--"),
 			"the note still carries no machine metadata",
 		);
 	});
@@ -527,7 +559,8 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 	await check("removing an excerpt rewrites the note", async () => {
 		const [first] = await plugin.store.excerptsFor(pdf);
-		assert.equal(await plugin.store.removeExcerpt(pdf, first.id), true);
+		const removed = await plugin.store.removeExcerpt(pdf, first.id);
+		assert.equal(removed?.id, first.id, "the removed excerpt is handed back for cleanup");
 		const after = await plugin.store.excerptsFor(pdf);
 		assert.equal(after.length, 1);
 		assert.equal(after[0].text, "jumps");
@@ -541,7 +574,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		const fs = require("node:fs");
 		const os = require("node:os");
 
-		app.metadataCache.frontmatter.set("摘录知识库/Attention Is Full.md", {
+		app.metadataCache.frontmatter.set("摘录知识库/Attention Is Full/Attention Is Full.md", {
 			type: "pdf-excerpt",
 			source: "papers/Attention Is Full.pdf",
 		});
@@ -574,7 +607,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 		const leaf = app.workspace.activeLeaf;
 		assert.ok(leaf, "a leaf became active");
-		assert.equal(leaf._openPath, "摘录知识库/Attention Is Full.md", "the note is loaded there");
+		assert.equal(leaf._openPath, "摘录知识库/Attention Is Full/Attention Is Full.md", "the note is loaded there");
 		assert.equal(leaf._side, "tab", "it opened in the main area, not a sidebar");
 		assert.ok(!panelLeaves.has(leaf), "it is not the side panel leaf");
 		assert.ok(
@@ -606,7 +639,11 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 			width: 12,
 			height: 8,
 		});
-		assert.match(imagePath, /^attachments\//, "the attachment folder is honoured");
+		assert.ok(
+			imagePath.startsWith("摘录知识库/Attention Is Full/"),
+			`the PNG sits beside its note, got ${imagePath}`,
+		);
+		assert.match(imagePath, /-第5页-\d{14}\.png$/, "second-precision name, so two shots never clash");
 		const binary = app.vault.files.get(imagePath);
 		assert.ok(binary, "the PNG was written through the vault");
 		assert.equal(binary.binary.byteLength, 4, "the bytes survived");
@@ -617,7 +654,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		const again = await plugin.store.addImage(pdf, 5, imagePath);
 		assert.equal(again.status, "added", "re-shooting the same page is allowed");
 
-		const note = app.vault.files.get("摘录知识库/Attention Is Full.md")._content;
+		const note = app.vault.files.get("摘录知识库/Attention Is Full/Attention Is Full.md")._content;
 		assert.match(note, /\[!quote\] 截图 · 第 5 页/, "marked as a screenshot excerpt");
 		assert.ok(note.includes(`> ![[${imagePath}]]`), "the image is embedded");
 		assert.ok(!new RegExp(`"image"`).test(note), "the image path lives in the embed, not in JSON");
@@ -691,7 +728,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 		const imagePath = [...app.vault.files.keys()].find((path) => path.endsWith(".png"));
 		assert.ok(imagePath, `a png was written; files: ${[...app.vault.files.keys()].join(", ")}`);
-		const note = app.vault.files.get("摘录知识库/Attention Is Full.md");
+		const note = app.vault.files.get("摘录知识库/Attention Is Full/Attention Is Full.md");
 		assert.match(note._content, /截图 · 第 1 页/, "labelled as a screenshot");
 		assert.match(note._content, new RegExp(`!\\[\\[${imagePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "image embed");
 	});
@@ -779,6 +816,28 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		await plugin.activateSidebar();
 		const leaf = app.workspace.leaves.at(-1);
 		assert.equal(leaf._state?.type, "pdf-excerpt-view");
+	});
+
+	await check("deleting a screenshot excerpt permanently deletes its PNG", async () => {
+		const before = await plugin.store.excerptsFor(pdf);
+		const shot = before.find((e) => e.image);
+		assert.ok(shot, "a screenshot excerpt exists to delete");
+		const imagePath = shot.image;
+		const imagesBefore = before.filter((e) => e.image).length;
+		assert.ok(app.vault.files.has(imagePath), `the PNG exists first: ${imagePath}`);
+
+		await plugin.removeExcerptFrom(pdf, shot.id);
+		await tick();
+
+		assert.ok(!app.vault.files.has(imagePath), "the PNG was deleted together with the excerpt");
+		assert.equal(app.vault.lastDelete?.path, imagePath, "that is the file that was deleted");
+		assert.equal(app.vault.lastDelete?.force, true, "deleted outright, not moved to the trash");
+		const after = await plugin.store.excerptsFor(pdf);
+		assert.equal(
+			after.filter((e) => e.image).length,
+			imagesBefore - 1,
+			"exactly one screenshot excerpt left the note",
+		);
 	});
 
 	/* ---- teardown --------------------------------------------------- */

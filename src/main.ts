@@ -29,7 +29,7 @@ import { buildExport, countExcerpts, type ExportFormat } from "./export";
 import { startScreenshot, type ScreenshotCapture } from "./screenshot";
 import {
 	defaultLinkBuilder,
-	formatTimestamp,
+	fileStamp,
 	isImageExcerpt,
 	normalizeExcerptText,
 	type Excerpt,
@@ -289,11 +289,17 @@ export default class PdfExcerptPlugin extends Plugin {
 			name: "迁移旧版摘录笔记（改为隐藏的几何数据）",
 			callback: () => void this.migrateLegacyNotes(),
 		});
+
+		this.addCommand({
+			id: "tidy-excerpt-notes-into-folders",
+			name: "整理摘录笔记（移入以 PDF 命名的子文件夹）",
+			callback: () => void this.tidyExcerptNotes(),
+		});
 	}
 
 	/**
 	 * 1.0.0 stored each excerpt's geometry in a trailing HTML comment. Newer notes
-	 * keep that data in the plugin's own data file; this rewrites the old ones.
+	 * keep that data in a hidden `%%` comment; this rewrites the old ones.
 	 */
 	private async migrateLegacyNotes(): Promise<void> {
 		try {
@@ -305,6 +311,24 @@ export default class PdfExcerptPlugin extends Plugin {
 			console.error("[pdf-excerpt] 迁移失败", error);
 			new Notice("迁移摘录笔记失败，详情见控制台");
 		}
+	}
+
+	/** Moves notes from the older flat layout into their per-PDF folder. */
+	private async tidyExcerptNotes(): Promise<void> {
+		try {
+			const { moved, skipped } = await this.store.migrateFlatNotes();
+			if (moved) {
+				new Notice(
+					`已把 ${moved} 篇摘录笔记移入各自的子文件夹${skipped ? `，跳过 ${skipped} 篇` : ""}`,
+				);
+			} else {
+				new Notice(skipped ? `没有可整理的笔记（跳过 ${skipped} 篇）` : "没有需要整理的摘录笔记");
+			}
+		} catch (error) {
+			console.error("[pdf-excerpt] 整理摘录笔记失败", error);
+			new Notice("整理摘录笔记失败，详情见控制台");
+		}
+		this.scheduleRefresh();
 	}
 
 	private registerPdfContextMenu(): void {
@@ -598,25 +622,30 @@ export default class PdfExcerptPlugin extends Plugin {
 		}
 	}
 
-	/** Writes the PNG through the vault, honouring the user's attachment settings. */
+	/**
+	 * Writes the PNG into the PDF's own excerpt folder, so screenshots live next
+	 * to the note that embeds them instead of in a separate attachment tree.
+	 */
 	private async saveScreenshotFile(file: TFile, capture: ScreenshotCapture): Promise<string> {
-		const stamp = formatTimestamp(Date.now()).replace(/[-: ]/g, "");
-		const name = `${sanitizeFileName(file.basename)}-第${capture.page}页-${stamp}.png`;
+		const name = `${sanitizeFileName(file.basename)}-第${capture.page}页-${fileStamp(Date.now())}.png`;
+		const folder = this.store.noteFolderFor(file);
+		await ensureVaultFolder(this.app, folder);
 
-		let path: string | null = null;
-		try {
-			path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
-		} catch (error) {
-			console.warn("[pdf-excerpt] 无法按附件设置选择位置，改用摘录文件夹", error);
-		}
-		if (!path) {
-			const folder = normalizePath(`${this.settings.excerptFolder.trim() || "摘录知识库"}/附件`);
-			await ensureVaultFolder(this.app, folder);
-			path = normalizePath(`${folder}/${name}`);
-		}
-
+		const path = this.uniqueAttachmentPath(folder, name);
 		await this.app.vault.createBinary(path, capture.data);
 		return path;
+	}
+
+	/** Second precision is not always enough; never overwrite an existing PNG. */
+	private uniqueAttachmentPath(folder: string, name: string): string {
+		const stem = name.replace(/\.png$/i, "");
+		for (let i = 0; i < 100; i++) {
+			const candidate = normalizePath(
+				[folder, `${stem}${i ? `-${i}` : ""}.png`].filter(Boolean).join("/"),
+			);
+			if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
+		}
+		return normalizePath([folder, `${stem}-${Date.now()}.png`].filter(Boolean).join("/"));
 	}
 
 	/** The open PDF's page host, so screenshots target what the user sees. */
@@ -643,12 +672,26 @@ export default class PdfExcerptPlugin extends Plugin {
 			const removed = await this.store.removeExcerpt(file, id);
 			if (!removed) {
 				new Notice("这条摘录已经不存在了。");
+			} else if (removed.image) {
+				await this.deleteAttachment(removed.image);
 			}
 		} catch (err) {
 			console.error("[pdf-excerpt] 删除摘录失败", err);
 			new Notice("删除失败，请查看控制台。");
 		}
 		this.scheduleRefresh();
+	}
+
+	/** A screenshot excerpt owns its PNG, so dropping the excerpt drops the file. */
+	private async deleteAttachment(path: string): Promise<void> {
+		const target = this.app.vault.getAbstractFileByPath(path);
+		if (!(target instanceof TFile)) return;
+		try {
+			await this.app.vault.delete(target, true);
+		} catch (error) {
+			console.warn(`[pdf-excerpt] 无法删除截图文件：${path}`, error);
+			new Notice(`摘录已删除，但截图文件没能删除：${path}`);
+		}
 	}
 
 	async exportAll(format: ExportFormat = "md"): Promise<void> {
