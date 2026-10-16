@@ -572,11 +572,15 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		const panelLeaves = new Set(app.workspace.getLeavesOfType("pdf-excerpt-view"));
 		await plugin.openExcerptNote(pdf);
 
-		assert.equal(app.workspace.leaves.length, before + 1, "a fresh tab was created");
 		const leaf = app.workspace.activeLeaf;
-		assert.ok(leaf, "the new tab is active");
+		assert.ok(leaf, "a leaf became active");
 		assert.equal(leaf._openPath, "摘录知识库/Attention Is Full.md", "the note is loaded there");
+		assert.equal(leaf._side, "tab", "it opened in the main area, not a sidebar");
 		assert.ok(!panelLeaves.has(leaf), "it is not the side panel leaf");
+		assert.ok(
+			app.workspace.leaves.length <= before + 1,
+			"it does not open extra tabs",
+		);
 	});
 
 	await check("exporting asks the OS where to save, and never opens the file", async () => {
@@ -745,20 +749,22 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		app.workspace.activeFile = pdf;
 
 		await plugin.openExcerptNote(pdf);
-		assert.equal(
-			app.workspace.activeLeaf._openState?.eState?.mode,
-			"preview",
-			"opened in reading view by default",
-		);
+		assert.equal(app.workspace.activeLeaf._mode, "preview", "opened in reading view by default");
 
 		plugin.settings.openNoteInReadingView = false;
 		await plugin.openExcerptNote(pdf);
-		assert.equal(
-			app.workspace.activeLeaf._openState?.eState?.mode,
-			"source",
-			"the setting can request edit mode instead",
-		);
+		assert.equal(app.workspace.activeLeaf._mode, "source", "the setting can request edit mode instead");
 		plugin.settings.openNoteInReadingView = true;
+	});
+
+	await check("opening the same note twice reuses its tab", async () => {
+		app.workspace.activeFile = pdf;
+		await plugin.openExcerptNote(pdf);
+		const before = app.workspace.leaves.length;
+
+		await plugin.openExcerptNote(pdf);
+		assert.equal(app.workspace.leaves.length, before, "no extra tab was created");
+		assert.equal(app.workspace.activeLeaf._mode, "preview", "and it is still reading view");
 	});
 
 	await check("settings tab renders every control", async () => {

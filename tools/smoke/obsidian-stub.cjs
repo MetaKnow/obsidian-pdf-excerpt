@@ -220,12 +220,19 @@ class Workspace extends Emitter {
 	getLeaf() {
 		return this._newLeaf("tab");
 	}
-	_newLeaf() {
+	_newLeaf(side = "tab") {
 		const leaf = {
+			// Where the leaf lives: "tab" = main area, "right"/"left" = sidebar.
+			_side: side,
 			view: { getViewType: () => "empty", containerEl: document.createElement("div") },
 			openFile: async (file, openState) => {
 				leaf._openPath = file.path;
 				leaf._openState = openState;
+				// Faithful to Obsidian: only `state.mode` reaches
+				// MarkdownView.setState and switches the mode. `eState` is handed to
+				// View.setEphemeralState, which ignores `mode` completely.
+				leaf._mode = openState?.state?.mode ?? leaf._mode ?? "source";
+				leaf.view = new MarkdownView(file);
 				this.activeFile = file;
 			},
 			setViewState: async (state) => {
@@ -347,7 +354,17 @@ class Plugin extends Component {
 	}
 }
 
-class MarkdownView {}
+class MarkdownView {
+	constructor(file = null) {
+		this.file = file;
+	}
+	getViewType() {
+		return "markdown";
+	}
+	setEphemeralState(state) {
+		this._ephemeral = state;
+	}
+}
 
 class ItemView extends Component {
 	constructor(leaf) {

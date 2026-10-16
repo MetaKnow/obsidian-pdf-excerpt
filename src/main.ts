@@ -5,7 +5,7 @@
  * overlays, the side panel and the PDF right-click menu together.
  */
 
-import { Menu, Notice, Plugin, TFile, normalizePath, setIcon } from "obsidian";
+import { MarkdownView, Menu, Notice, Plugin, TFile, normalizePath, setIcon } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	PdfExcerptSettingTab,
@@ -526,15 +526,19 @@ export default class PdfExcerptPlugin extends Plugin {
 	 * PDF the user is reading.
 	 */
 	private async openNoteInMainArea(file: TFile): Promise<void> {
-		const leaf = this.app.workspace.getLeaf("tab");
-		// "preview" is Obsidian's reading view. It is applied as ephemeral state so
-		// it only affects this leaf and never the user's default editing mode.
+		// Reuse a tab that already shows this note instead of opening a second copy.
+		const leaf =
+			this.app.workspace.getLeavesOfType("markdown").find((candidate) => {
+				const view = candidate.view;
+				return view instanceof MarkdownView && view.file?.path === file.path;
+			}) ?? this.app.workspace.getLeaf("tab");
+		// `mode` is part of the markdown view STATE, not its ephemeral state:
+		// WorkspaceLeaf.setViewState hands this object to MarkdownView.setState,
+		// which switches the mode; View.setEphemeralState ignores `mode` entirely.
+		// Passing it here is what makes this plugin's choice win over the vault's
+		// "Default view for new tabs" setting.
 		const mode = this.settings.openNoteInReadingView ? "preview" : "source";
-		await leaf.openFile(file, { eState: { mode } });
-		// A leaf that was already open can ignore the state handed to openFile, so
-		// apply it to the view as well.
-		const view = leaf.view as { setEphemeralState?: (state: unknown) => void };
-		if (typeof view?.setEphemeralState === "function") view.setEphemeralState({ mode });
+		await leaf.openFile(file, { state: { mode } });
 		this.app.workspace.setActiveLeaf(leaf, { focus: true });
 	}
 
