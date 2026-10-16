@@ -4,6 +4,19 @@ All notable changes to this plugin are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-10-16
+
+### 文档与元数据（配合社区目录审核）
+
+- `manifest.json` 的描述补上结尾句号，并按官方术语规范把 `markdown` 写成 `Markdown`
+  （社区目录的硬性要求：描述必须以 `.` 结尾，且术语大小写要正确）。
+- `README.md` 改为英文——社区目录主要面向英文用户，中文版移至 `README.zh.md`，
+  两份顶部都有语言切换。
+- 新增「隐私与文件访问 / Privacy and file access」章节，按开发者政策披露插件唯一访问
+  仓库之外文件的地方：只有点导出时才会弹出系统文件夹选择框、由用户选定目标目录，
+  随后才用 Node `fs` 复制；其余任何时刻都只通过 Obsidian 的 Vault API 读写仓库，
+  且不发起任何网络请求。
+
 ## [1.0.0] - 2025-10-16
 
 ### Added

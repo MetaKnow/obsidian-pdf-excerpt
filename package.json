@@ -1,6 +1,6 @@
 {
   "name": "obsidian-pdf-excerpt",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Excerpt text from PDFs into per-PDF markdown notes, with in-PDF highlighting.",
   "main": "main.js",
   "scripts": {
