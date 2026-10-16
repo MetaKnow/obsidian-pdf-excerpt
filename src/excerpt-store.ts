@@ -9,6 +9,7 @@
 
 import { App, TFile, TFolder, normalizePath } from "obsidian";
 import {
+	LEGACY_COMMENT_RE_G,
 	excerptIdFor,
 	excerptKey,
 	normalizeExcerptText,
@@ -335,6 +336,38 @@ export class ExcerptStore {
 		data.updated = Date.now();
 		await this.save(pdf, data);
 		return true;
+	}
+
+	/**
+	 * One-off cleanup for notes written by 1.0.0, which carried the geometry in a
+	 * trailing HTML comment. Re-saving each such note moves its geometry into the
+	 * plugin data file and rewrites the note without the comment. Idempotent.
+	 */
+	async migrateLegacyNotes(): Promise<{ scanned: number; migrated: number }> {
+		let scanned = 0;
+		let migrated = 0;
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const content = await this.app.vault.cachedRead(file);
+			LEGACY_COMMENT_RE_G.lastIndex = 0;
+			// Cheap pre-filter that does not rely on the metadata cache being warm.
+			if (!LEGACY_COMMENT_RE_G.test(content)) continue;
+			scanned++;
+			try {
+				const data = parseExcerptFile(content);
+				const cache = this.app.metadataCache.getFileCache(file)?.frontmatter;
+				const source = data.source || (typeof cache?.source === "string" ? cache.source : "");
+				const resolved = source ? this.app.vault.getAbstractFileByPath(source) : null;
+				if (!(resolved instanceof TFile)) {
+					console.warn(`[pdf-excerpt] 无法确定摘录笔记对应的 PDF：${file.path}`);
+					continue;
+				}
+				await this.save(resolved, data);
+				migrated++;
+			} catch (error) {
+				console.error(`[pdf-excerpt] 迁移失败：${file.path}`, error);
+			}
+		}
+		return { scanned, migrated };
 	}
 
 	async clearCache(): Promise<void> {

@@ -380,4 +380,5 @@ export function stripFrontmatter(content: string): string {
 	return parseFrontmatter(content).body;
 }
 
+export { LEGACY_COMMENT_RE_G };
 export const __testing = { LEGACY_COMMENT_RE, LEGACY_COMMENT_RE_G, CALLOUT_HEADER_RE, parseFrontmatter };

@@ -239,6 +239,28 @@ export default class PdfExcerptPlugin extends Plugin {
 				callback: () => void this.exportAll(format),
 			});
 		}
+
+		this.addCommand({
+			id: "migrate-legacy-excerpt-notes",
+			name: "迁移旧版摘录笔记（移除笔记里的几何注释）",
+			callback: () => void this.migrateLegacyNotes(),
+		});
+	}
+
+	/**
+	 * 1.0.0 stored each excerpt's geometry in a trailing HTML comment. Newer notes
+	 * keep that data in the plugin's own data file; this rewrites the old ones.
+	 */
+	private async migrateLegacyNotes(): Promise<void> {
+		try {
+			const { migrated } = await this.store.migrateLegacyNotes();
+			new Notice(
+				migrated ? `已迁移 ${migrated} 篇摘录笔记，笔记中的几何注释已移除` : "没有需要迁移的摘录笔记",
+			);
+		} catch (error) {
+			console.error("[pdf-excerpt] 迁移失败", error);
+			new Notice("迁移摘录笔记失败，详情见控制台");
+		}
 	}
 
 	private registerPdfContextMenu(): void {

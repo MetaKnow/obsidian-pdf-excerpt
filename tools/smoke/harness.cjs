@@ -236,7 +236,7 @@ function storedGeometry(notePath) {
 
 	await check("onload() completes and registers everything", async () => {
 		await plugin.onload();
-		assert.equal(plugin.commands.length, 8, "commands registered");
+		assert.equal(plugin.commands.length, 9, "commands registered");
 		assert.equal(plugin.views.length, 1, "sidebar view registered");
 		assert.equal(plugin.settingTabs.length, 1, "settings tab registered");
 		assert.equal(plugin.ribbonIcons.length, 1, "left ribbon icon registered");
@@ -338,6 +338,42 @@ function storedGeometry(notePath) {
 		// The note itself carries no rects, so this can only come from the data file.
 		assert.equal(excerpt.rects.length, 2, "rects restored from geometry.json");
 		closeTo(excerpt.rects[0].x, 96 / 816, "x after reload");
+	});
+
+	await check("the 迁移 command rewrites every old note in one go", async () => {
+		const original = [
+			"---",
+			"type: pdf-excerpt",
+			'source: "papers/Stale.pdf"',
+			'title: "Stale"',
+			"---",
+			"",
+			"# 摘录 · Stale",
+			"",
+			"> [!quote] 第 2 页 · 2024-01-02 03:04",
+			"> stale text",
+			">",
+			"> [[papers/Stale.pdf#page=2|Stale, 第 2 页]]",
+			"",
+			'<!-- pdf-excerpt {"id":"estale","page":2,"rects":[[0.1,0.1,0.2,0.02]],"created":1} -->',
+			"",
+		].join("\n");
+		assert.ok(original.includes("<!--"), "it really starts out dirty");
+		await app.vault.create("摘录知识库/Stale.md", original);
+		await app.vault.create("papers/Stale.pdf", "%PDF-1.4 fake");
+
+		const command = plugin.commands.find((c) => c.id === "migrate-legacy-excerpt-notes");
+		command.callback();
+		// The command is fire-and-forget: let its async chain settle, then flush
+		// the write it scheduled (the writer is debounced by 400 ms).
+		await tick();
+		await tick();
+		await flushGeometry();
+
+		const after = app.vault.files.get("摘录知识库/Stale.md")._content;
+		assert.ok(!after.includes("<!--"), "comment stripped");
+		assert.match(after, /> stale text/, "the excerpt itself is untouched");
+		assert.ok(storedGeometry("摘录知识库/Stale.md")?.estale, "geometry captured first");
 	});
 
 	await check("a note written by 1.0.0 is migrated on the next save", async () => {
