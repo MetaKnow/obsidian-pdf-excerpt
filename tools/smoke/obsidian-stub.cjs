@@ -209,11 +209,37 @@ class Workspace extends Emitter {
 	}
 }
 
+/**
+ * DataAdapter stub. The plugin only ever writes inside its own folder, and this
+ * keeps an in-memory map so the harness can inspect geometry.json directly.
+ */
+class DataAdapter {
+	constructor() {
+		this.files = new Map();
+	}
+	async exists(path) {
+		return this.files.has(normalizePath(path));
+	}
+	async read(path) {
+		const key = normalizePath(path);
+		if (!this.files.has(key)) throw new Error(`ENOENT: ${key}`);
+		return this.files.get(key);
+	}
+	async write(path, data) {
+		this.files.set(normalizePath(path), String(data));
+	}
+	async remove(path) {
+		this.files.delete(normalizePath(path));
+	}
+}
+
 class App {
 	constructor() {
 		this.vault = new Vault();
 		this.metadataCache = new MetadataCache(this.vault);
 		this.fileManager = new FileManager(this);
+		this.vault.adapter = new DataAdapter();
+		this.vault.configDir = ".obsidian";
 		this.workspace = new Workspace(this);
 		this.keymap = { pushScope() {}, popScope() {} };
 		this.scope = {};

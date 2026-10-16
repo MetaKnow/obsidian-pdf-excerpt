@@ -210,7 +210,27 @@ function noticeMatching(re) {
 		name: "PDF Excerpt",
 		version: "1.0.0",
 		minAppVersion: "1.5.0",
+		dir: ".obsidian/plugins/pdf-excerpt",
 	});
+
+const GEOMETRY_PATH = ".obsidian/plugins/pdf-excerpt/geometry.json";
+
+/** Geometry writes are debounced; flush the store so the file is on disk. */
+async function flushGeometry() {
+	if (plugin.geometry && typeof plugin.geometry.flush === "function") {
+		await plugin.geometry.flush();
+		return;
+	}
+	await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
+/** Reads the persisted geometry for one note, straight from the data file. */
+function storedGeometry(notePath) {
+	const raw = app.vault.adapter.files.get(GEOMETRY_PATH);
+	assert.ok(raw, `geometry.json written; adapter files: ${[...app.vault.adapter.files.keys()].join(", ")}`);
+	const parsed = JSON.parse(raw);
+	return parsed.notes[notePath];
+}
 
 	/* ---- lifecycle ------------------------------------------------- */
 
@@ -268,7 +288,7 @@ function noticeMatching(re) {
 		assert.equal(evt.defaultPrevented, false, "event untouched");
 	});
 
-	await check("the excerpt lands flat in 摘录知识库/<pdf>.md with geometry + back-link", async () => {
+	await check("the excerpt lands flat in 摘录知识库/<pdf>.md with a clean body", async () => {
 		setLineRects(LINE_RECTS);
 		selectRange(parts.span1, 4, parts.span2, 9);
 		rightClick(parts.span2);
@@ -289,21 +309,73 @@ function noticeMatching(re) {
 			/\[\[papers\/Attention Is Full\.pdf#page=1\|Attention Is Full, 第 1 页\]\]/,
 			"back-link uses Obsidian's own link format",
 		);
+		assert.ok(!body.includes("<!--"), "no HTML comment anywhere in the note");
+		assert.ok(!body.includes("rects"), "no geometry payload in the note");
 
-		const payload = /<!-- pdf-excerpt (\{.*?\}) -->/.exec(body);
-		assert.ok(payload, "geometry comment present");
-		const meta = JSON.parse(payload[1]);
+		// The geometry moved to the plugin's own data file, keyed by note + excerpt.
+		await flushGeometry();
+		const entries = storedGeometry(notePath);
+		assert.ok(entries, "geometry entry for the note");
+		const ids = Object.keys(entries);
+		assert.equal(ids.length, 1, "one excerpt's geometry");
+		const meta = entries[ids[0]];
 		assert.equal(meta.page, 1);
 		assert.equal(meta.rects.length, 2, "one rect per selected line");
-		// Stored as 4-decimal fractions, so compare at that precision.
-		closeTo(meta.rects[0][0], 96 / 816, "x");
-		closeTo(meta.rects[0][1], 208 / 1056, "y");
-		closeTo(meta.rects[0][2], 208 / 816, "w");
-		closeTo(meta.rects[0][3], 16 / 1056, "h");
-		closeTo(meta.rects[1][1], 226 / 1056, "second line y");
-		closeTo(meta.rects[1][2], 128 / 816, "second line w");
+		// Stored as 4-decimal page fractions, so compare at that precision.
+		closeTo(meta.rects[0].x, 96 / 816, "x");
+		closeTo(meta.rects[0].y, 208 / 1056, "y");
+		closeTo(meta.rects[0].w, 208 / 816, "w");
+		closeTo(meta.rects[0].h, 16 / 1056, "h");
+		closeTo(meta.rects[1].y, 226 / 1056, "second line y");
+		closeTo(meta.rects[1].w, 128 / 816, "second line w");
 
 		assert.equal(await plugin.store.excerptsFor(pdf).then((e) => e.length), 1);
+	});
+
+	await check("geometry is re-attached on a cold read of the note", async () => {
+		plugin.store.clearCache();
+		const [excerpt] = await plugin.store.excerptsFor(pdf);
+		// The note itself carries no rects, so this can only come from the data file.
+		assert.equal(excerpt.rects.length, 2, "rects restored from geometry.json");
+		closeTo(excerpt.rects[0].x, 96 / 816, "x after reload");
+	});
+
+	await check("a note written by 1.0.0 is migrated on the next save", async () => {
+		// The user already has notes like this, with the geometry in a comment.
+		const legacyPdf = await app.vault.create("papers/Legacy.pdf", "%PDF-1.4 fake");
+		const legacyPath = "摘录知识库/Legacy.md";
+		await app.vault.create(
+			legacyPath,
+			[
+				"---",
+				"type: pdf-excerpt",
+				'source: "papers/Legacy.pdf"',
+				'title: "Legacy"',
+				"---",
+				"",
+				"# 摘录 · Legacy",
+				"",
+				"> [!quote] 第 4 页 · 2024-01-02 03:04",
+				"> old text",
+				">",
+				"> [[papers/Legacy.pdf#page=4|Legacy, 第 4 页]]",
+				"",
+				'<!-- pdf-excerpt {"id":"eold","page":4,"rects":[[0.2,0.3,0.4,0.05]],"created":1704164640000,"sel":"1,0,1,8"} -->',
+				"",
+			].join("\n"),
+		);
+
+		const loaded = await plugin.store.load(legacyPdf, { fresh: true });
+		assert.equal(loaded.excerpts.length, 1);
+		assert.equal(loaded.excerpts[0].id, "eold", "the stored id is reused");
+		assert.equal(loaded.excerpts[0].rects.length, 1, "legacy geometry is read back");
+
+		const rewritten = await plugin.store.save(legacyPdf, loaded);
+		assert.ok(!rewritten._content.includes("<!--"), "the comment is dropped from the note");
+		await flushGeometry();
+		const entries = storedGeometry(legacyPath);
+		assert.ok(entries?.eold, "geometry moved into the data file");
+		assert.equal(entries.eold.selection, "1,0,1,8");
 	});
 
 	await check("two same-named PDFs get separate notes with no subfolder", async () => {
@@ -333,9 +405,9 @@ function noticeMatching(re) {
 
 		assert.ok(noticeMatching(/已经摘录过/), `notices: ${obsidianStub.Notice.instances.map((n) => n.message).join(" | ")}`);
 		assert.equal((await plugin.store.excerptsFor(pdf)).length, 1, "still exactly one excerpt");
-		assert.equal(
-			app.vault.files.get("摘录知识库/Attention Is Full.md")._content.match(/<!-- pdf-excerpt /g).length,
-			1,
+		assert.ok(
+			!app.vault.files.get("摘录知识库/Attention Is Full.md")._content.includes("<!--"),
+			"the note still carries no machine metadata",
 		);
 	});
 

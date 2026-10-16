@@ -11,6 +11,7 @@ import {
 	PdfExcerptSettingTab,
 	type PdfExcerptSettings,
 } from "./settings";
+import { GeometryStore } from "./geometry-store";
 import { ExcerptStore, ensureVaultFolder } from "./excerpt-store";
 import {
 	captureSelection,
@@ -61,14 +62,17 @@ export default class PdfExcerptPlugin extends Plugin {
 	private refreshTimer: number | null = null;
 	private highlightsVisible = true;
 	private rightRibbonButton: HTMLElement | null = null;
+	private geometry: GeometryStore | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.geometry = await this.createGeometryStore();
 
 		this.store = new ExcerptStore(
 			this.app,
 			() => ({ excerptFolder: this.settings.excerptFolder, tags: [] }),
 			(excerpt, source, title) => this.buildExcerptLink(excerpt, source, title),
+			this.geometry ?? undefined,
 		);
 
 		this.registerView(VIEW_TYPE_PDF_EXCERPT, (leaf) => new PdfExcerptSidebarView(leaf, this));
@@ -87,6 +91,25 @@ export default class PdfExcerptPlugin extends Plugin {
 		this.scheduleRefresh();
 	}
 
+	/**
+	 * Highlight geometry is kept in the plugin's own folder rather than in the
+	 * notes, so the notes stay clean. Losing the file costs only the highlights:
+	 * the excerpt text itself always remains in the notes.
+	 */
+	private async createGeometryStore(): Promise<GeometryStore | null> {
+		const dir = this.manifest.dir;
+		if (!dir) return null;
+		try {
+			const geometry = new GeometryStore(this.app.vault.adapter, `${dir}/geometry.json`);
+			await geometry.load();
+			geometry.prune(new Set(this.app.vault.getMarkdownFiles().map((file) => file.path)));
+			return geometry;
+		} catch (error) {
+			console.error("[pdf-excerpt] 高亮数据文件初始化失败，本次将不显示已保存的高亮", error);
+			return null;
+		}
+	}
+
 	onunload(): void {
 		if (this.refreshTimer !== null) {
 			window.clearTimeout(this.refreshTimer);
@@ -94,6 +117,7 @@ export default class PdfExcerptPlugin extends Plugin {
 		}
 		this.rightRibbonButton?.detach();
 		this.rightRibbonButton = null;
+		void this.geometry?.flush();
 		for (const entry of this.layers.values()) entry.layer.destroy();
 		this.layers.clear();
 		this.pdfLeaves.clear();
@@ -550,11 +574,22 @@ export default class PdfExcerptPlugin extends Plugin {
 		};
 		this.registerEvent(this.app.vault.on("modify", onVaultChange));
 		this.registerEvent(this.app.vault.on("create", onVaultChange));
-		this.registerEvent(this.app.vault.on("delete", (file) => this.store.invalidate(file.path)));
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				this.store.invalidate(file.path);
+				this.geometry?.deleteNote(file.path);
+			}),
+		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				this.store.invalidate(oldPath);
 				this.store.invalidate(file.path);
+				// Geometry is keyed by note path, so a note rename must follow it.
+				const moved = this.geometry?.getNote(oldPath);
+				if (moved) {
+					this.geometry?.deleteNote(oldPath);
+					this.geometry?.setNote(file.path, moved);
+				}
 				this.scheduleRefresh();
 			}),
 		);

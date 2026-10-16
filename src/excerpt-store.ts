@@ -9,16 +9,19 @@
 
 import { App, TFile, TFolder, normalizePath } from "obsidian";
 import {
-	createExcerptId,
+	excerptIdFor,
 	excerptKey,
 	normalizeExcerptText,
 	parseExcerptFile,
 	rectOverlapRatio,
+	round4,
 	serializeExcerptFile,
+	shortHash,
 	type Excerpt,
 	type ExcerptFileData,
 	type SerializeOptions,
 } from "./excerpt-markdown";
+import type { GeometryStore, NoteGeometry } from "./geometry-store";
 import type { PageExcerptSlice } from "./pdf-view";
 
 export interface ExcerptStoreSettings {
@@ -47,15 +50,6 @@ function baseName(path: string): string {
 	return last.replace(/\.pdf$/i, "");
 }
 
-/** FNV-1a, base36 — only used to break a same-basename collision deterministically. */
-function shortHash(value: string): string {
-	let hash = 2166136261;
-	for (let i = 0; i < value.length; i++) {
-		hash ^= value.charCodeAt(i);
-		hash = Math.imul(hash, 16777619);
-	}
-	return (hash >>> 0).toString(36).padStart(6, "0").slice(-6);
-}
 
 /** Weighted geometric overlap between two rect sets on the same page. */
 export function rectSetCoverage(a: Excerpt["rects"], b: Excerpt["rects"]): number {
@@ -120,6 +114,7 @@ export class ExcerptStore {
 		private app: App,
 		private getSettings: () => ExcerptStoreSettings,
 		private linkBuilder?: SerializeOptions["linkBuilder"],
+		private geometry?: GeometryStore,
 	) {}
 
 	/* ---------------- paths ---------------- */
@@ -226,6 +221,16 @@ export class ExcerptStore {
 		data.title = data.title || this.titleFor(pdf);
 		if (!data.tags?.length) data.tags = this.getSettings().tags;
 
+		// The note carries no geometry, so re-attach it from the plugin data file.
+		// On the first load after an upgrade this also picks up the legacy
+		// geometry comments, which save() then persists here and drops.
+		for (const excerpt of data.excerpts) {
+			const geometry = this.geometry?.get(path, excerpt.id);
+			if (!geometry) continue;
+			excerpt.rects = geometry.rects;
+			excerpt.selection = geometry.selection;
+		}
+
 		this.claimed.set(path, pdf.path);
 		this.cache.set(path, { mtime: file.stat.mtime, size: file.stat.size, data });
 		return data;
@@ -255,6 +260,8 @@ export class ExcerptStore {
 			file = await this.app.vault.create(path, content);
 		}
 
+		this.geometry?.setNote(path, buildGeometry(data.excerpts));
+
 		const stored = { ...data, source: pdf.path, updated: Date.now() };
 		this.claimed.set(path, pdf.path);
 		this.cache.set(path, { mtime: file.stat.mtime, size: file.stat.size, data: stored });
@@ -282,7 +289,7 @@ export class ExcerptStore {
 				continue;
 			}
 			const excerpt: Excerpt = {
-				id: createExcerptId(),
+				id: excerptIdFor(slice.page, text),
 				page: slice.page,
 				text,
 				rects: slice.rects,
@@ -338,4 +345,23 @@ export class ExcerptStore {
 	invalidate(path: string): void {
 		this.cache.delete(path);
 	}
+}
+
+/** Geometry is persisted rounded to 4 decimals; the note text is the real data. */
+function buildGeometry(excerpts: Excerpt[]): NoteGeometry {
+	const geometry: NoteGeometry = {};
+	for (const excerpt of excerpts) {
+		if (!excerpt.rects.length && !excerpt.selection) continue;
+		geometry[excerpt.id] = {
+			page: excerpt.page,
+			rects: excerpt.rects.map((r) => ({
+				x: round4(r.x),
+				y: round4(r.y),
+				w: round4(r.w),
+				h: round4(r.h),
+			})),
+			selection: excerpt.selection ?? null,
+		};
+	}
+	return geometry;
 }

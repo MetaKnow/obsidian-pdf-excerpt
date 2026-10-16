@@ -9,7 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - 在 PDF 中选中文字后右键 → **加入摘录**，写入该 PDF 专属的 Markdown 摘录笔记。
-- 每个 PDF 一个独立笔记，默认放在仓库的 `摘录知识库` 文件夹中。
+- 每个 PDF 一个独立笔记，全部平铺在仓库的 `摘录知识库` 文件夹中（不建子文件夹）。
+- 摘录笔记是干净的纯文档：只有 frontmatter、标题和引用块，不含任何注释或几何数据。
 - 右侧边栏「PDF 摘录」面板：列出当前 PDF 的全部摘录，可定位、复制、删除。
 - 可在面板中直接导出全部摘录（Markdown / CSV / JSON / HTML），并一键打开摘录笔记。
 - 已摘录的文字在 PDF 中以高亮块显示，重复摘录会被自动拦截。

@@ -19,11 +19,14 @@
  *   >
  *   > [[papers/Attention.pdf#page=1|Attention, 第 1 页]]
  *
- *   <!-- pdf-excerpt {"id":"e1a2b3","page":1,"rects":[[0.1,0.2,0.3,0.02]],"created":1730000000000} -->
+ * The note is a plain, human readable document: nothing but the frontmatter,
+ * the heading and one blockquote per excerpt. The machine readable geometry
+ * (highlight rectangles and the native selection subpath) is NOT written here —
+ * it lives in the plugin's own data file, keyed by note path + excerpt id, so
+ * the user can freely edit the note without being confronted with metadata.
  *
- * The human readable blockquote carries the text; the trailing HTML comment
- * carries the machine readable geometry. A user may freely edit the text of the
- * quote without breaking the highlight geometry, and vice versa.
+ * An excerpt's id is derived from its page + normalized text, which is why the
+ * id survives a reload even though it is never stored in the note.
  */
 
 export interface ExcerptRect {
@@ -72,12 +75,13 @@ export interface SerializeOptions {
 }
 
 export const EXCERPT_TYPE = "pdf-excerpt";
-export const COMMENT_PREFIX = "pdf-excerpt";
 
-/** `<!-- pdf-excerpt {json} -->` on a single line. */
-const COMMENT_RE = /<!--\s*pdf-excerpt\s+(\{[^\n]*?\})\s*-->/;
-const COMMENT_RE_G = /<!--\s*pdf-excerpt\s+(\{[^\n]*?\})\s*-->/g;
-const CALLOUT_RE = /^\s*\[![^\]]+\]\s*/;
+/** Legacy geometry comments still found in notes written by 1.0.0. */
+const LEGACY_COMMENT_RE = /^<!--\s*pdf-excerpt\s+(\{[^\n]*?\})\s*-->\s*$/;
+const LEGACY_COMMENT_RE_G = /<!--\s*pdf-excerpt\s+(\{[^\n]*?\})\s*-->/g;
+/** `> [!quote] 第 12 页 · 2025-01-01 10:00` (the timestamp is optional). */
+const CALLOUT_HEADER_RE = /^>\s*\[![^\]]+\]\s*第\s*(\d+)\s*页\s*(?:[·・]\s*(.*?))?\s*$/;
+const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/;
 const WIKILINK_ONLY_RE = /^\s*!?\[\[[^\]]+\]\]\s*$/;
 const QUOTE_PREFIX_RE = /^\s*>\s?/;
 
@@ -111,11 +115,24 @@ export function rectOverlapRatio(a: ExcerptRect, b: ExcerptRect): number {
 	return inter / smallest;
 }
 
-/** 64 bits of randomness, so ids never collide inside one note. */
-export function createExcerptId(rand: () => number = Math.random): string {
-	const a = Math.floor(rand() * 0xffffffff).toString(36);
-	const b = Math.floor(rand() * 0xffffffff).toString(36);
-	return `e${a}${b}`;
+/** FNV-1a, base36. Short, stable and good enough to key notes and excerpts. */
+export function shortHash(value: string): string {
+	let hash = 2166136261;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(36);
+}
+
+/**
+ * An excerpt's identity, derived from its page + normalized text. Deriving it
+ * (rather than storing it) is what lets the geometry file be keyed by id even
+ * though the note carries no id at all. Two excerpts on one page can never share
+ * a key, because that is exactly the duplicate rule.
+ */
+export function excerptIdFor(page: number, text: string): string {
+	return `e${shortHash(excerptKey(page, text))}`;
 }
 
 export function formatTimestamp(ts: number): string {
@@ -124,7 +141,7 @@ export function formatTimestamp(ts: number): string {
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function round4(n: number): number {
+export function round4(n: number): number {
 	return Math.round(n * 10000) / 10000;
 }
 
@@ -139,7 +156,7 @@ export function defaultLinkBuilder(excerpt: Excerpt, source: string, title: stri
 	return `[[${target}|${alias}]]`;
 }
 
-/** Renders one excerpt as a blockquote followed by its geometry comment. */
+/** Renders one excerpt as a plain, metadata-free blockquote. */
 export function formatExcerptEntry(excerpt: Excerpt, opts: SerializeOptions = {}): string {
 	const linkBuilder = opts.linkBuilder ?? defaultLinkBuilder;
 	const header = `[!quote] 第 ${excerpt.page} 页 · ${formatTimestamp(excerpt.created)}`;
@@ -155,16 +172,6 @@ export function formatExcerptEntry(excerpt: Excerpt, opts: SerializeOptions = {}
 		lines.push(">");
 		lines.push(`> ${link}`);
 	}
-
-	lines.push("");
-	const payload: Record<string, unknown> = {
-		id: excerpt.id,
-		page: excerpt.page,
-		rects: excerpt.rects.map((r) => [round4(r.x), round4(r.y), round4(r.w), round4(r.h)]),
-		created: excerpt.created,
-	};
-	if (excerpt.selection) payload.sel = excerpt.selection;
-	lines.push(`<!-- ${COMMENT_PREFIX} ${JSON.stringify(payload)} -->`);
 	return lines.join("\n");
 }
 
@@ -264,43 +271,28 @@ function parseFrontmatter(content: string): ParsedFrontmatter {
 	return result;
 }
 
-function coerceExcerpt(raw: unknown): Excerpt | null {
-	if (!raw || typeof raw !== "object") return null;
-	const obj = raw as Record<string, unknown>;
-	const page = Number(obj.page);
-	if (!Number.isFinite(page) || page < 1) return null;
-	const rectsRaw = Array.isArray(obj.rects) ? obj.rects : [];
+function rectsFromPayload(raw: unknown): ExcerptRect[] {
+	if (!Array.isArray(raw)) return [];
 	const rects: ExcerptRect[] = [];
-	for (const r of rectsRaw) {
+	for (const r of raw) {
 		if (!Array.isArray(r) || r.length < 4) continue;
 		const [x, y, w, h] = r.map(Number);
 		if (![x, y, w, h].every((n) => Number.isFinite(n))) continue;
 		rects.push({ x, y, w, h });
 	}
-	return {
-		id: typeof obj.id === "string" && obj.id ? obj.id : createExcerptId(),
-		page,
-		text: "",
-		rects,
-		created: Number.isFinite(Number(obj.created)) ? Number(obj.created) : Date.now(),
-		selection: typeof obj.sel === "string" && obj.sel ? obj.sel : null,
-	};
+	return rects;
 }
 
-/** Recovers the quote text that sits directly above a geometry comment. */
-function quoteAbove(lines: string[], commentLine: number): string {
-	let j = commentLine - 1;
-	while (j >= 0 && lines[j].trim() === "") j--;
-	const block: string[] = [];
-	while (j >= 0 && /^\s*>/.test(lines[j])) {
-		block.unshift(lines[j]);
-		j--;
-	}
-	if (!block.length) return "";
+function parseTimestamp(raw: string | undefined): number | null {
+	if (!raw) return null;
+	const m = TIMESTAMP_RE.exec(raw.trim());
+	if (!m) return null;
+	return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+}
 
-	const stripped = block.map((l) => l.replace(QUOTE_PREFIX_RE, ""));
-	if (stripped.length && CALLOUT_RE.test(stripped[0])) stripped.shift();
-
+/** The text of one quote block: no callout header, no back-link, no blank edges. */
+function quoteText(block: string[]): string {
+	const stripped = block.map((line) => line.replace(QUOTE_PREFIX_RE, ""));
 	while (stripped.length && stripped[stripped.length - 1].trim() === "") stripped.pop();
 	if (stripped.length && WIKILINK_ONLY_RE.test(stripped[stripped.length - 1])) {
 		stripped.pop();
@@ -312,29 +304,55 @@ function quoteAbove(lines: string[], commentLine: number): string {
 export function parseExcerptFile(content: string): ExcerptFileData {
 	const { data, body } = parseFrontmatter(content);
 	const lines = body.split("\n");
-
 	const excerpts: Excerpt[] = [];
 	const seen = new Set<string>();
-	COMMENT_RE_G.lastIndex = 0;
-	let match: RegExpExecArray | null;
-	while ((match = COMMENT_RE_G.exec(body)) !== null) {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(match[1]);
-		} catch {
-			continue;
+
+	for (let i = 0; i < lines.length; i++) {
+		const header = CALLOUT_HEADER_RE.exec(lines[i]);
+		if (!header) continue;
+		const page = Number(header[1]);
+		if (!Number.isFinite(page) || page < 1) continue;
+
+		// The block is simply the contiguous run of `>` lines after the header.
+		let j = i + 1;
+		const block: string[] = [];
+		while (j < lines.length && /^\s*>/.test(lines[j])) {
+			block.push(lines[j]);
+			j++;
 		}
-		const excerpt = coerceExcerpt(parsed);
-		if (!excerpt) continue;
+		i = j - 1;
 
-		// Map the byte offset of the match back to a line index.
-		const lineIndex = body.slice(0, match.index).split("\n").length - 1;
-		excerpt.text = quoteAbove(lines, lineIndex);
+		// 1.0.0 wrote a geometry comment after each block. Absorb it so the store
+		// can migrate the geometry into the plugin data file and drop the comment.
+		let k = j;
+		while (k < lines.length && lines[k].trim() === "") k++;
+		const legacy = LEGACY_COMMENT_RE.exec(lines[k] ?? "")?.[1];
+		let payload: Record<string, unknown> = {};
+		if (legacy) {
+			try {
+				const parsed: unknown = JSON.parse(legacy);
+				if (parsed && typeof parsed === "object") payload = parsed as Record<string, unknown>;
+			} catch {
+				payload = {};
+			}
+		}
 
-		const key = excerpt.id;
+		const text = quoteText(block);
+		if (!text) continue;
+		const key = excerptKey(page, text);
 		if (seen.has(key)) continue;
 		seen.add(key);
-		excerpts.push(excerpt);
+
+		const fromHeader = parseTimestamp(header[2]);
+		excerpts.push({
+			id: typeof payload.id === "string" && payload.id ? payload.id : excerptIdFor(page, text),
+			page,
+			text,
+			rects: rectsFromPayload(payload.rects),
+			created:
+				fromHeader ?? (Number.isFinite(Number(payload.created)) ? Number(payload.created) : Date.now()),
+			selection: typeof payload.sel === "string" && payload.sel ? payload.sel : null,
+		});
 	}
 
 	const now = Date.now();
@@ -362,4 +380,4 @@ export function stripFrontmatter(content: string): string {
 	return parseFrontmatter(content).body;
 }
 
-export const __testing = { COMMENT_RE, parseFrontmatter };
+export const __testing = { LEGACY_COMMENT_RE, LEGACY_COMMENT_RE_G, CALLOUT_HEADER_RE, parseFrontmatter };

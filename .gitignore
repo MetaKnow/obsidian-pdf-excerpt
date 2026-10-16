@@ -7,6 +7,7 @@ node_modules/
 
 # Obsidian
 data.json
+geometry.json
 .hotreload/
 
 # Editor / OS
