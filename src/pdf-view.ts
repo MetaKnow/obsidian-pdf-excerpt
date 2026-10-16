@@ -211,6 +211,52 @@ export function pageReferenceEl(pageEl: HTMLElement): HTMLElement {
 	);
 }
 
+/**
+ * The box normalized excerpt coordinates are relative to, with fallbacks: a
+ * canvas that has not been laid out yet reports a degenerate rect, and the
+ * text/annotation layers cover exactly the same box when it has.
+ */
+export function pageReferenceRect(pageEl: HTMLElement): DOMRect | null {
+	const candidates = [
+		pageEl.querySelector<HTMLElement>("canvas"),
+		pageEl.querySelector<HTMLElement>(".canvasWrapper"),
+		pageEl.querySelector<HTMLElement>(".textLayer"),
+		pageEl.querySelector<HTMLElement>(".annotationLayer"),
+	];
+	for (const el of candidates) {
+		if (!el) continue;
+		const rect = el.getBoundingClientRect();
+		if (rect.width > 0 && rect.height > 0) return rect;
+	}
+	const own = pageEl.getBoundingClientRect();
+	return own.width > 0 && own.height > 0 ? own : null;
+}
+
+/**
+ * Sizes an absolutely positioned child of `pageEl` so it covers that page's
+ * content box exactly.
+ *
+ * The measurement is done by parking the element at 0/0 and reading back where
+ * it actually landed, because an absolutely positioned child is offset from its
+ * containing block's PADDING box while getBoundingClientRect() reports the
+ * BORDER box — and `.page` carries a scale-dependent transparent border. Doing
+ * it this way also survives page rotation and any future box-sizing change.
+ *
+ * Returns the reference box, or null when the page is not laid out yet.
+ */
+export function alignOverlayToCanvas(el: HTMLElement, pageEl: HTMLElement): DOMRect | null {
+	const ref = pageReferenceRect(pageEl);
+	if (!ref) return null;
+	el.style.left = "0px";
+	el.style.top = "0px";
+	const origin = el.getBoundingClientRect();
+	el.style.left = `${ref.left - origin.left}px`;
+	el.style.top = `${ref.top - origin.top}px`;
+	el.style.width = `${ref.width}px`;
+	el.style.height = `${ref.height}px`;
+	return ref;
+}
+
 /* ------------------------------------------------------------------ */
 /* Selection capture                                                   */
 /* ------------------------------------------------------------------ */
@@ -395,17 +441,28 @@ export function captureSelection(
 		const text = sub.toString().replace(/\u00a0/g, " ").trim();
 		if (!text) continue;
 
-		const ref = pageReferenceEl(pageEl).getBoundingClientRect();
 		const rawRects: RawRect[] = [];
 		for (const r of Array.from(sub.getClientRects())) {
 			rawRects.push({ left: r.left, top: r.top, width: r.width, height: r.height });
+		}
+
+		const ref = pageReferenceRect(pageEl);
+		const rects = ref ? normalizeRects(mergeLineRects(rawRects), ref) : [];
+		if (!rects.length) {
+			// Without geometry the text still lands in the note, but the excerpt can
+			// never be highlighted again — say so loudly instead of failing silently.
+			console.warn("[pdf-excerpt] 未能计算摘录位置，这条摘录将没有高亮", {
+				page,
+				clientRects: rawRects.length,
+				reference: ref ? { w: ref.width, h: ref.height } : null,
+			});
 		}
 
 		const pageView = viewer?.getPage?.(page);
 		slices.push({
 			page,
 			text,
-			rects: normalizeRects(mergeLineRects(rawRects), ref),
+			rects,
 			selection: selectionRangeString(pageView, sub),
 		});
 	}

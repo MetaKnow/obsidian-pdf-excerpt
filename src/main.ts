@@ -11,8 +11,7 @@ import {
 	PdfExcerptSettingTab,
 	type PdfExcerptSettings,
 } from "./settings";
-import { GeometryStore } from "./geometry-store";
-import { ExcerptStore, ensureVaultFolder } from "./excerpt-store";
+import { ExcerptStore, ensureVaultFolder, sanitizeFileName } from "./excerpt-store";
 import {
 	captureSelection,
 	getPdfLeafViews,
@@ -27,7 +26,14 @@ import {
 import { PdfHighlightLayer } from "./highlight-layer";
 import { VIEW_TYPE_PDF_EXCERPT, PdfExcerptSidebarView } from "./sidebar";
 import { buildExport, countExcerpts, type ExportFormat } from "./export";
-import { defaultLinkBuilder, normalizeExcerptText, type Excerpt } from "./excerpt-markdown";
+import { startScreenshot, type ScreenshotCapture } from "./screenshot";
+import {
+	defaultLinkBuilder,
+	formatTimestamp,
+	isImageExcerpt,
+	normalizeExcerptText,
+	type Excerpt,
+} from "./excerpt-markdown";
 
 interface PdfLeafInfo {
 	file: TFile;
@@ -51,6 +57,57 @@ interface MenuContext {
 	view: PdfLeafView | null;
 }
 
+interface SaveDialogResult {
+	canceled: boolean;
+	filePath?: string;
+}
+
+interface SaveFilter {
+	name: string;
+	extensions: string[];
+}
+
+interface SaveDialogLike {
+	showSaveDialog(options: {
+		title?: string;
+		defaultPath?: string;
+		filters?: SaveFilter[];
+	}): Promise<SaveDialogResult>;
+}
+
+/**
+ * Obsidian runs plugins inside the Electron renderer, where `require` is
+ * available. `electron.remote` was removed in Electron 14, so fall back to
+ * `@electron/remote` — the same pair Obsidian itself uses.
+ */
+function electronSaveDialog(): SaveDialogLike | null {
+	if (typeof require !== "function") return null;
+	try {
+		const electron = require("electron") as { remote?: { dialog?: SaveDialogLike } } | undefined;
+		const dialog = electron?.remote?.dialog;
+		if (dialog) return dialog;
+	} catch (error) {
+		console.warn("[pdf-excerpt] require('electron') 不可用", error);
+	}
+	try {
+		const remote = require("@electron/remote") as { dialog?: SaveDialogLike } | undefined;
+		return remote?.dialog ?? null;
+	} catch (error) {
+		console.warn("[pdf-excerpt] require('@electron/remote') 不可用", error);
+		return null;
+	}
+}
+
+function nodeFs(): typeof import("fs") | null {
+	if (typeof require !== "function") return null;
+	try {
+		return require("fs") as typeof import("fs");
+	} catch (error) {
+		console.warn("[pdf-excerpt] require('fs') 不可用", error);
+		return null;
+	}
+}
+
 export default class PdfExcerptPlugin extends Plugin {
 	settings: PdfExcerptSettings = { ...DEFAULT_SETTINGS };
 	store!: ExcerptStore;
@@ -62,17 +119,14 @@ export default class PdfExcerptPlugin extends Plugin {
 	private refreshTimer: number | null = null;
 	private highlightsVisible = true;
 	private rightRibbonButton: HTMLElement | null = null;
-	private geometry: GeometryStore | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		this.geometry = await this.createGeometryStore();
 
 		this.store = new ExcerptStore(
 			this.app,
 			() => ({ excerptFolder: this.settings.excerptFolder, tags: [] }),
 			(excerpt, source, title) => this.buildExcerptLink(excerpt, source, title),
-			this.geometry ?? undefined,
 		);
 
 		this.registerView(VIEW_TYPE_PDF_EXCERPT, (leaf) => new PdfExcerptSidebarView(leaf, this));
@@ -91,25 +145,6 @@ export default class PdfExcerptPlugin extends Plugin {
 		this.scheduleRefresh();
 	}
 
-	/**
-	 * Highlight geometry is kept in the plugin's own folder rather than in the
-	 * notes, so the notes stay clean. Losing the file costs only the highlights:
-	 * the excerpt text itself always remains in the notes.
-	 */
-	private async createGeometryStore(): Promise<GeometryStore | null> {
-		const dir = this.manifest.dir;
-		if (!dir) return null;
-		try {
-			const geometry = new GeometryStore(this.app.vault.adapter, `${dir}/geometry.json`);
-			await geometry.load();
-			geometry.prune(new Set(this.app.vault.getMarkdownFiles().map((file) => file.path)));
-			return geometry;
-		} catch (error) {
-			console.error("[pdf-excerpt] 高亮数据文件初始化失败，本次将不显示已保存的高亮", error);
-			return null;
-		}
-	}
-
 	onunload(): void {
 		if (this.refreshTimer !== null) {
 			window.clearTimeout(this.refreshTimer);
@@ -117,7 +152,6 @@ export default class PdfExcerptPlugin extends Plugin {
 		}
 		this.rightRibbonButton?.detach();
 		this.rightRibbonButton = null;
-		void this.geometry?.flush();
 		for (const entry of this.layers.values()) entry.layer.destroy();
 		this.layers.clear();
 		this.pdfLeaves.clear();
@@ -241,8 +275,18 @@ export default class PdfExcerptPlugin extends Plugin {
 		}
 
 		this.addCommand({
+			id: "screenshot-to-excerpt",
+			name: "截图并加入摘录笔记",
+			checkCallback: (checking) => {
+				if (!this.activePdfTarget()) return false;
+				if (!checking) void this.captureScreenshot();
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "migrate-legacy-excerpt-notes",
-			name: "迁移旧版摘录笔记（移除笔记里的几何注释）",
+			name: "迁移旧版摘录笔记（改为隐藏的几何数据）",
 			callback: () => void this.migrateLegacyNotes(),
 		});
 	}
@@ -457,14 +501,14 @@ export default class PdfExcerptPlugin extends Plugin {
 		}
 
 		if (this.settings.openNoteOnFirstExcerpt && result.noteCreated && result.noteFile) {
-			await this.revealInRightSidebar(result.noteFile);
+			await this.openNoteInMainArea(result.noteFile);
 		}
 	}
 
 	async openExcerptNote(file: TFile): Promise<void> {
 		const existing = this.store.getNoteFile(file);
 		if (existing) {
-			await this.revealInRightSidebar(existing);
+			await this.openNoteInMainArea(existing);
 			return;
 		}
 		const data = await this.store.load(file);
@@ -473,14 +517,18 @@ export default class PdfExcerptPlugin extends Plugin {
 			return;
 		}
 		const note = await this.store.save(file, data);
-		await this.revealInRightSidebar(note);
+		await this.openNoteInMainArea(note);
 	}
 
-	private async revealInRightSidebar(file: TFile): Promise<void> {
-		const leaf = this.app.workspace.getRightLeaf(false);
-		if (!leaf) return;
+	/**
+	 * Excerpt notes open as a normal tab in the main area. `getLeaf("tab")` is
+	 * deliberate: `getLeaf(false)` would reuse the active leaf and replace the
+	 * PDF the user is reading.
+	 */
+	private async openNoteInMainArea(file: TFile): Promise<void> {
+		const leaf = this.app.workspace.getLeaf("tab");
 		await leaf.openFile(file);
-		this.app.workspace.revealLeaf(leaf);
+		this.app.workspace.setActiveLeaf(leaf, { focus: true });
 	}
 
 	async locateExcerpt(excerpt: Excerpt): Promise<void> {
@@ -492,8 +540,76 @@ export default class PdfExcerptPlugin extends Plugin {
 		if (file) new Notice("没有找到这条摘录对应的 PDF 页面，请先打开该 PDF。");
 	}
 
+	/** Resource URL for a screenshot excerpt, used by the sidebar preview. */
+	imageUrlFor(excerpt: Excerpt): string {
+		if (!excerpt.image) return "";
+		const file = this.app.vault.getAbstractFileByPath(excerpt.image);
+		return file instanceof TFile ? this.app.vault.getResourcePath(file) : "";
+	}
+
 	async copyExcerpt(excerpt: Excerpt): Promise<void> {
-		await this.writeClipboard(excerpt.text);
+		await this.writeClipboard(isImageExcerpt(excerpt) ? `![[${excerpt.image}]]` : excerpt.text);
+	}
+
+	/** A region screenshot of the active PDF, appended to that PDF's note. */
+	async captureScreenshot(): Promise<void> {
+		const target = this.activePdfTarget();
+		if (!target) {
+			new Notice("请先打开一个 PDF，并等页面显示出来再截图。");
+			return;
+		}
+
+		const capture = await startScreenshot(target.host, (message) => new Notice(message, 3000));
+		if (!capture) return;
+
+		try {
+			const imagePath = await this.saveScreenshotFile(target.file, capture);
+			const result = await this.store.addImage(target.file, capture.page, imagePath);
+			if (result.status !== "added") {
+				new Notice(`截图已保存到 ${imagePath}，但没能写入摘录笔记。`);
+				this.scheduleRefresh();
+				return;
+			}
+			new Notice(`已把第 ${capture.page} 页的截图加入摘录`);
+			this.scheduleRefresh();
+			if (this.settings.openNoteOnFirstExcerpt && result.noteCreated && result.noteFile) {
+				await this.openNoteInMainArea(result.noteFile);
+			}
+		} catch (error) {
+			console.error("[pdf-excerpt] 截图保存失败", error);
+			new Notice("截图保存失败，详情见控制台。");
+		}
+	}
+
+	/** Writes the PNG through the vault, honouring the user's attachment settings. */
+	private async saveScreenshotFile(file: TFile, capture: ScreenshotCapture): Promise<string> {
+		const stamp = formatTimestamp(Date.now()).replace(/[-: ]/g, "");
+		const name = `${sanitizeFileName(file.basename)}-第${capture.page}页-${stamp}.png`;
+
+		let path: string | null = null;
+		try {
+			path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
+		} catch (error) {
+			console.warn("[pdf-excerpt] 无法按附件设置选择位置，改用摘录文件夹", error);
+		}
+		if (!path) {
+			const folder = normalizePath(`${this.settings.excerptFolder.trim() || "摘录知识库"}/附件`);
+			await ensureVaultFolder(this.app, folder);
+			path = normalizePath(`${folder}/${name}`);
+		}
+
+		await this.app.vault.createBinary(path, capture.data);
+		return path;
+	}
+
+	/** The open PDF's page host, so screenshots target what the user sees. */
+	private activePdfTarget(): { file: TFile; host: HTMLElement } | null {
+		const file = this.getActivePdfFile();
+		if (!file) return null;
+		for (const target of this.collectHighlightTargets()) {
+			if (target.file?.path === file.path) return { file, host: target.host };
+		}
+		return null;
 	}
 
 	private async writeClipboard(text: string): Promise<void> {
@@ -533,24 +649,80 @@ export default class PdfExcerptPlugin extends Plugin {
 			return;
 		}
 
-		const folder = this.settings.exportFolder.trim();
-		const path = normalizePath(folder ? `${folder}/${payload.fileName}` : payload.fileName);
 		try {
-			await ensureVaultFolder(this.app, folder);
-			const existing = this.app.vault.getAbstractFileByPath(path);
-			let outFile: TFile;
-			if (existing instanceof TFile) {
-				await this.app.vault.modify(existing, payload.content);
-				outFile = existing;
-			} else {
-				outFile = await this.app.vault.create(path, payload.content);
-			}
-			new Notice(`已导出 ${countExcerpts(payload.records)} 条摘录 → ${outFile.path}`);
-			if (format === "md") await this.app.workspace.getLeaf(true).openFile(outFile);
+			const saved = await this.saveTextToDisk({
+				defaultName: payload.fileName,
+				content: payload.content,
+			});
+			if (!saved) return;
+			new Notice(`已导出 ${countExcerpts(payload.records)} 条摘录 → ${saved}`);
 		} catch (err) {
 			console.error("[pdf-excerpt] 写出导出文件失败", err);
 			new Notice("写出导出文件失败，请查看控制台。");
 		}
+	}
+
+	/** Exports the open PDF's own excerpt note, wherever the user wants it. */
+	async exportCurrentNote(): Promise<void> {
+		const file = this.getActivePdfFile();
+		if (!file) {
+			new Notice("请先打开一个 PDF。");
+			return;
+		}
+		const note = this.store.getNoteFile(file);
+		if (!note) {
+			new Notice("这个 PDF 还没有摘录笔记。");
+			return;
+		}
+		try {
+			const content = await this.app.vault.cachedRead(note);
+			const saved = await this.saveTextToDisk({
+				defaultName: `${note.basename}.md`,
+				content,
+				filters: [{ name: "Markdown", extensions: ["md"] }],
+			});
+			if (saved) new Notice(`已导出摘录文件 → ${saved}`);
+		} catch (err) {
+			console.error("[pdf-excerpt] 导出摘录文件失败", err);
+			new Notice("导出摘录文件失败，请查看控制台。");
+		}
+	}
+
+	/**
+	 * Asks the OS where to put the file. Falls back to the vault export folder on
+	 * platforms where Obsidian does not expose a dialog, so the feature never
+	 * silently does nothing.
+	 */
+	private async saveTextToDisk(request: {
+		defaultName: string;
+		content: string;
+		filters?: SaveFilter[];
+	}): Promise<string | null> {
+		const dialog = electronSaveDialog();
+		if (dialog) {
+			try {
+				const result = await dialog.showSaveDialog({
+					title: "选择保存位置",
+					defaultPath: request.defaultName,
+					filters: request.filters,
+				});
+				if (result.canceled || !result.filePath) return null;
+				const fs = nodeFs();
+				if (!fs) throw new Error("fs 不可用");
+				await fs.promises.writeFile(result.filePath, request.content, "utf8");
+				return result.filePath;
+			} catch (err) {
+				console.error("[pdf-excerpt] 写入所选位置失败，改用仓库导出文件夹", err);
+			}
+		}
+
+		const folder = this.settings.exportFolder.trim();
+		const path = normalizePath(folder ? `${folder}/${request.defaultName}` : request.defaultName);
+		await ensureVaultFolder(this.app, folder);
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) await this.app.vault.modify(existing, request.content);
+		else await this.app.vault.create(path, request.content);
+		return path;
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -599,19 +771,12 @@ export default class PdfExcerptPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				this.store.invalidate(file.path);
-				this.geometry?.deleteNote(file.path);
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				this.store.invalidate(oldPath);
 				this.store.invalidate(file.path);
-				// Geometry is keyed by note path, so a note rename must follow it.
-				const moved = this.geometry?.getNote(oldPath);
-				if (moved) {
-					this.geometry?.deleteNote(oldPath);
-					this.geometry?.setNote(file.path, moved);
-				}
 				this.scheduleRefresh();
 			}),
 		);

@@ -9,7 +9,7 @@
  */
 
 import type { Excerpt } from "./excerpt-markdown";
-import { isPageRendered, pageNumberOf, pageReferenceEl } from "./pdf-view";
+import { alignOverlayToCanvas, isPageRendered, pageNumberOf } from "./pdf-view";
 
 const LAYER_CLASS = "pdf-excerpt-layer";
 const HL_CLASS = "pdf-excerpt-hl";
@@ -40,6 +40,8 @@ export class PdfHighlightLayer {
 	private onActivate?: (excerpt: Excerpt) => void;
 	private byPage = new Map<number, Excerpt[]>();
 	private resizeObserver: ResizeObserver | null = null;
+	private loadObserver: MutationObserver | null = null;
+	private pendingRender: number | null = null;
 	private destroyed = false;
 
 	constructor(host: HTMLElement, opts: HighlightLayerOptions) {
@@ -51,6 +53,37 @@ export class PdfHighlightLayer {
 			this.resizeObserver = new ResizeObserver(() => this.render());
 			this.resizeObserver.observe(this.host);
 		}
+
+		// pdf.js renders pages lazily, so on a freshly opened PDF no `.page` is
+		// ready when the first render pass runs. Watch `data-loaded` and re-render
+		// as pages come in, otherwise reopened notes would never get highlights.
+		if (typeof MutationObserver !== "undefined") {
+			this.loadObserver = new MutationObserver((records) => {
+				for (const record of records) {
+					const target = record.target as HTMLElement;
+					if (target.classList?.contains(LAYER_CLASS)) continue;
+					if (record.attributeName === "data-loaded") {
+						this.scheduleRender();
+						return;
+					}
+				}
+			});
+			this.loadObserver.observe(this.host, {
+				subtree: true,
+				attributes: true,
+				attributeFilter: ["data-loaded"],
+			});
+		}
+	}
+
+	/** Coalesces bursts of page-load notifications into one render pass. */
+	private scheduleRender(): void {
+		if (this.destroyed || this.pendingRender !== null) return;
+		const win = this.host.ownerDocument?.defaultView ?? window;
+		this.pendingRender = win.requestAnimationFrame(() => {
+			this.pendingRender = null;
+			this.render();
+		});
 	}
 
 	/** Every live `.page` element, in document order. */
@@ -120,22 +153,7 @@ export class PdfHighlightLayer {
 
 		// Align the layer with the canvas box (the page div itself carries a
 		// scale-dependent transparent border, so its rect is not the content box).
-		const ref = pageReferenceEl(pageEl);
-		const refRect = ref.getBoundingClientRect();
-		if (refRect.width <= 0 || refRect.height <= 0) return;
-
-		// An absolutely positioned child of `.page` is offset from its PADDING
-		// box, so `pageRect` would overstate the origin by the border width.
-		// Park the layer at 0/0 and measure where that actually lands instead of
-		// assuming a border width; correct for rotation and box-sizing too.
-		layer.style.left = "0px";
-		layer.style.top = "0px";
-		const origin = layer.getBoundingClientRect();
-
-		layer.style.left = `${refRect.left - origin.left}px`;
-		layer.style.top = `${refRect.top - origin.top}px`;
-		layer.style.width = `${refRect.width}px`;
-		layer.style.height = `${refRect.height}px`;
+		if (!alignOverlayToCanvas(layer, pageEl)) return;
 
 		if (layer.dataset.renderedFor === this.signature(excerpts)) return;
 		layer.dataset.renderedFor = this.signature(excerpts);
@@ -238,6 +256,13 @@ export class PdfHighlightLayer {
 		this.destroyed = true;
 		this.resizeObserver?.disconnect();
 		this.resizeObserver = null;
+		this.loadObserver?.disconnect();
+		this.loadObserver = null;
+		if (this.pendingRender !== null) {
+			const win = this.host.ownerDocument?.defaultView ?? window;
+			win.cancelAnimationFrame(this.pendingRender);
+			this.pendingRender = null;
+		}
 		for (const pageEl of Array.from(this.host.querySelectorAll<HTMLElement>(`:scope > .page`))) {
 			this.detachLayer(pageEl);
 		}

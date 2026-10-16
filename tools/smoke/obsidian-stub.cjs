@@ -115,6 +115,23 @@ class Vault extends Emitter {
 		return this.read(file);
 	}
 
+	async createBinary(path, data) {
+		const key = normalizePath(path);
+		if (this.files.has(key)) throw new Error(`File already exists: ${key}`);
+		const dir = key.split("/").slice(0, -1).join("/");
+		if (dir && !this.folders.has(dir)) throw new Error(`Folder does not exist: ${dir}`);
+		const file = new TFile(key, "");
+		file.binary = data;
+		file.stat = { ...file.stat, size: data.byteLength ?? 0 };
+		this.files.set(key, file);
+		this.trigger("create", file);
+		return file;
+	}
+
+	getResourcePath(file) {
+		return `app://local/${encodeURIComponent(file.path)}`;
+	}
+
 	async delete(file) {
 		this.files.delete(file.path);
 		this.trigger("delete", file);
@@ -145,6 +162,25 @@ class FileManager {
 	constructor(app) {
 		this.app = app;
 	}
+	/**
+	 * Mirrors Obsidian: returns a path inside the configured attachment folder
+	 * that does not exist yet, creating the folder as a side effect.
+	 */
+	async getAvailablePathForAttachment(filename, sourcePath = "") {
+		const folder = "attachments";
+		if (!this.app.vault.folders.has(folder)) await this.app.vault.createFolder(folder);
+		const dot = filename.lastIndexOf(".");
+		const stem = dot > 0 ? filename.slice(0, dot) : filename;
+		const ext = dot > 0 ? filename.slice(dot) : "";
+		let candidate = `${folder}/${filename}`;
+		let n = 1;
+		while (this.app.vault.getAbstractFileByPath(candidate)) {
+			candidate = `${folder}/${stem} ${n}${ext}`;
+			n++;
+		}
+		return candidate;
+	}
+
 	generateMarkdownLink(file, sourcePath, subpath = "", alias = "") {
 		const target = file.path.replace(/\.md$/, "");
 		const body = alias ? `[[${target}${subpath}|${alias}]]` : `[[${target}${subpath}]]`;
@@ -188,6 +224,7 @@ class Workspace extends Emitter {
 		const leaf = {
 			view: { getViewType: () => "empty", containerEl: document.createElement("div") },
 			openFile: async (file) => {
+				leaf._openPath = file.path;
 				this.activeFile = file;
 			},
 			setViewState: async (state) => {
@@ -198,6 +235,10 @@ class Workspace extends Emitter {
 		return leaf;
 	}
 	revealLeaf() {}
+	setActiveLeaf(leaf) {
+		this.activeLeaf = leaf;
+		if (leaf?.view?.file) this.activeFile = leaf.view.file;
+	}
 	detachLeavesOfType(type) {
 		this.leaves = this.leaves.filter((l) => l.view?.getViewType?.() !== type);
 	}

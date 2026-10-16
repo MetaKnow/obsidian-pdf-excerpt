@@ -19,14 +19,20 @@
  *   >
  *   > [[papers/Attention.pdf#page=1|Attention, 第 1 页]]
  *
- * The note is a plain, human readable document: nothing but the frontmatter,
- * the heading and one blockquote per excerpt. The machine readable geometry
- * (highlight rectangles and the native selection subpath) is NOT written here —
- * it lives in the plugin's own data file, keyed by note path + excerpt id, so
- * the user can freely edit the note without being confronted with metadata.
+ *   %% pdf-excerpt {"id":"e1a2b3","page":1,"rects":[...],"created":...} %%
  *
- * An excerpt's id is derived from its page + normalized text, which is why the
- * id survives a reload even though it is never stored in the note.
+ * The note is a plain, human readable document: frontmatter, a heading, and one
+ * blockquote per excerpt. The machine readable geometry (highlight rectangles
+ * and the native selection subpath) rides along in an Obsidian comment
+ * (`%% ... %%`), which Obsidian hides in BOTH reading view and live preview — it
+ * is only visible in source mode. That keeps highlights working after a reload
+ * without ever putting metadata in the reader's face.
+ *
+ * An excerpt's id is stored in that comment, and falls back to a hash of the
+ * page + normalized text, so hand-written excerpts still work.
+ *
+ * A screenshot excerpt has no text and no geometry: its body is a single image
+ * embed (`> ![[attachments/shot.png]]`).
  */
 
 export interface ExcerptRect {
@@ -44,6 +50,7 @@ export interface Excerpt {
 	id: string;
 	/** 1-based page number */
 	page: number;
+	/** Empty for a screenshot excerpt. */
 	text: string;
 	rects: ExcerptRect[];
 	/** epoch milliseconds */
@@ -53,6 +60,8 @@ export interface Excerpt {
 	 * the generated link also triggers Obsidian's own in-PDF text highlight.
 	 */
 	selection?: string | null;
+	/** Vault path of an embedded image, for screenshot excerpts. */
+	image?: string | null;
 }
 
 export interface ExcerptFileData {
@@ -76,13 +85,20 @@ export interface SerializeOptions {
 
 export const EXCERPT_TYPE = "pdf-excerpt";
 
-/** Legacy geometry comments still found in notes written by 1.0.0. */
+/** Marker word inside the hidden metadata comment. */
+export const COMMENT_PREFIX = "pdf-excerpt";
+/** `%% pdf-excerpt {json} %%` — hidden by Obsidian in reading view + live preview. */
+const META_RE = /^\s*%%\s*pdf-excerpt\s+(\{[^\n]*?\})\s*%%\s*$/;
+const META_RE_G = /^\s*%%\s*pdf-excerpt\s+(\{[^\n]*?\})\s*%%\s*$/gm;
+/** Geometry comments written by 1.0.0, still read for backwards compatibility. */
 const LEGACY_COMMENT_RE = /^<!--\s*pdf-excerpt\s+(\{[^\n]*?\})\s*-->\s*$/;
 const LEGACY_COMMENT_RE_G = /<!--\s*pdf-excerpt\s+(\{[^\n]*?\})\s*-->/g;
-/** `> [!quote] 第 12 页 · 2025-01-01 10:00` (the timestamp is optional). */
-const CALLOUT_HEADER_RE = /^>\s*\[![^\]]+\]\s*第\s*(\d+)\s*页\s*(?:[·・]\s*(.*?))?\s*$/;
+/** `> [!quote] 第 12 页 · 2025-01-01 10:00` / `> [!quote] 截图 · 第 12 页 · …` */
+const CALLOUT_HEADER_RE = /^>\s*\[![^\]]+\]\s*(?:(截图)\s*[·・]\s*)?第\s*(\d+)\s*页\s*(?:[·・]\s*(.*?))?\s*$/;
 const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/;
-const WIKILINK_ONLY_RE = /^\s*!?\[\[[^\]]+\]\]\s*$/;
+/** A wikilink standing alone on a line — the back-link, never an image embed. */
+const BACKLINK_ONLY_RE = /^\s*\[\[[^\]]+\]\]\s*$/;
+const IMAGE_ONLY_RE = /^\s*!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]\s*$/;
 const QUOTE_PREFIX_RE = /^\s*>\s?/;
 
 /**
@@ -125,12 +141,7 @@ export function shortHash(value: string): string {
 	return (hash >>> 0).toString(36);
 }
 
-/**
- * An excerpt's identity, derived from its page + normalized text. Deriving it
- * (rather than storing it) is what lets the geometry file be keyed by id even
- * though the note carries no id at all. Two excerpts on one page can never share
- * a key, because that is exactly the duplicate rule.
- */
+/** Fallback identity for an excerpt that carries no stored id. */
 export function excerptIdFor(page: number, text: string): string {
 	return `e${shortHash(excerptKey(page, text))}`;
 }
@@ -145,6 +156,10 @@ export function round4(n: number): number {
 	return Math.round(n * 10000) / 10000;
 }
 
+export function isImageExcerpt(excerpt: Pick<Excerpt, "image">): boolean {
+	return typeof excerpt.image === "string" && excerpt.image.length > 0;
+}
+
 function sanitizeForWikilink(s: string): string {
 	return s.replace(/[[\]|#^]/g, "");
 }
@@ -156,15 +171,37 @@ export function defaultLinkBuilder(excerpt: Excerpt, source: string, title: stri
 	return `[[${target}|${alias}]]`;
 }
 
-/** Renders one excerpt as a plain, metadata-free blockquote. */
+/** The hidden geometry line that follows an excerpt block. */
+export function formatMetaLine(excerpt: Excerpt): string {
+	const payload: Record<string, unknown> = {
+		id: excerpt.id,
+		page: excerpt.page,
+		created: excerpt.created,
+	};
+	if (excerpt.rects.length) {
+		payload.rects = excerpt.rects.map((r) => [round4(r.x), round4(r.y), round4(r.w), round4(r.h)]);
+	}
+	if (excerpt.selection) payload.sel = excerpt.selection;
+	return `%% ${COMMENT_PREFIX} ${JSON.stringify(payload)} %%`;
+}
+
+/** Renders one excerpt as a blockquote plus its hidden metadata line. */
 export function formatExcerptEntry(excerpt: Excerpt, opts: SerializeOptions = {}): string {
 	const linkBuilder = opts.linkBuilder ?? defaultLinkBuilder;
-	const header = `[!quote] 第 ${excerpt.page} 页 · ${formatTimestamp(excerpt.created)}`;
+	const image = isImageExcerpt(excerpt);
+
+	const header = image
+		? `[!quote] 截图 · 第 ${excerpt.page} 页 · ${formatTimestamp(excerpt.created)}`
+		: `[!quote] 第 ${excerpt.page} 页 · ${formatTimestamp(excerpt.created)}`;
 	const lines: string[] = [`> ${header}`];
 
-	const text = excerpt.text.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
-	for (const line of text.split("\n")) {
-		lines.push(line.length ? `> ${line}` : ">");
+	if (image) {
+		lines.push(`> ![[${excerpt.image}]]`);
+	} else {
+		const text = excerpt.text.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+		for (const line of text.split("\n")) {
+			lines.push(line.length ? `> ${line}` : ">");
+		}
 	}
 
 	const link = linkBuilder(excerpt, opts.source ?? "", opts.title ?? "");
@@ -172,6 +209,9 @@ export function formatExcerptEntry(excerpt: Excerpt, opts: SerializeOptions = {}
 		lines.push(">");
 		lines.push(`> ${link}`);
 	}
+
+	lines.push("");
+	lines.push(formatMetaLine(excerpt));
 	return lines.join("\n");
 }
 
@@ -283,6 +323,16 @@ function rectsFromPayload(raw: unknown): ExcerptRect[] {
 	return rects;
 }
 
+function payloadObject(raw: string | undefined): Record<string, unknown> {
+	if (!raw) return {};
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
+}
+
 function parseTimestamp(raw: string | undefined): number | null {
 	if (!raw) return null;
 	const m = TIMESTAMP_RE.exec(raw.trim());
@@ -290,15 +340,28 @@ function parseTimestamp(raw: string | undefined): number | null {
 	return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime();
 }
 
-/** The text of one quote block: no callout header, no back-link, no blank edges. */
-function quoteText(block: string[]): string {
+/** Removes the `>` prefix, the blank edges and the trailing back-link line. */
+function strippedLines(block: string[]): string[] {
 	const stripped = block.map((line) => line.replace(QUOTE_PREFIX_RE, ""));
 	while (stripped.length && stripped[stripped.length - 1].trim() === "") stripped.pop();
-	if (stripped.length && WIKILINK_ONLY_RE.test(stripped[stripped.length - 1])) {
+	if (stripped.length && BACKLINK_ONLY_RE.test(stripped[stripped.length - 1])) {
 		stripped.pop();
 		while (stripped.length && stripped[stripped.length - 1].trim() === "") stripped.pop();
 	}
-	return stripped.join("\n").trim();
+	return stripped;
+}
+
+/** The image path when the block is a screenshot excerpt, else null. */
+function blockImage(block: string[]): string | null {
+	const stripped = strippedLines(block).filter((line) => line.trim() !== "");
+	if (stripped.length !== 1) return null;
+	const m = IMAGE_ONLY_RE.exec(stripped[0]);
+	return m ? m[1].trim() : null;
+}
+
+/** The text of one quote block: no callout header, no back-link, no blank edges. */
+function quoteText(block: string[]): string {
+	return strippedLines(block).join("\n").trim();
 }
 
 export function parseExcerptFile(content: string): ExcerptFileData {
@@ -310,7 +373,7 @@ export function parseExcerptFile(content: string): ExcerptFileData {
 	for (let i = 0; i < lines.length; i++) {
 		const header = CALLOUT_HEADER_RE.exec(lines[i]);
 		if (!header) continue;
-		const page = Number(header[1]);
+		const page = Number(header[2]);
 		if (!Number.isFinite(page) || page < 1) continue;
 
 		// The block is simply the contiguous run of `>` lines after the header.
@@ -322,36 +385,37 @@ export function parseExcerptFile(content: string): ExcerptFileData {
 		}
 		i = j - 1;
 
-		// 1.0.0 wrote a geometry comment after each block. Absorb it so the store
-		// can migrate the geometry into the plugin data file and drop the comment.
+		// The hidden metadata line sits just below the block, possibly after blank
+		// lines. `<!-- ... -->` is the 1.0.0 spelling and is still accepted.
 		let k = j;
 		while (k < lines.length && lines[k].trim() === "") k++;
-		const legacy = LEGACY_COMMENT_RE.exec(lines[k] ?? "")?.[1];
-		let payload: Record<string, unknown> = {};
-		if (legacy) {
-			try {
-				const parsed: unknown = JSON.parse(legacy);
-				if (parsed && typeof parsed === "object") payload = parsed as Record<string, unknown>;
-			} catch {
-				payload = {};
-			}
+		const line = lines[k] ?? "";
+		const payload = payloadObject(META_RE.exec(line)?.[1] ?? LEGACY_COMMENT_RE.exec(line)?.[1]);
+
+		const image = blockImage(block);
+		const text = image ? "" : quoteText(block);
+		if (!image && !text) continue;
+
+		if (!image) {
+			const key = excerptKey(page, text);
+			if (seen.has(key)) continue;
+			seen.add(key);
 		}
 
-		const text = quoteText(block);
-		if (!text) continue;
-		const key = excerptKey(page, text);
-		if (seen.has(key)) continue;
-		seen.add(key);
+		const fallbackId = image
+			? `e${shortHash(`${page}\u0000${image}`)}`
+			: excerptIdFor(page, text);
+		const fromHeader = parseTimestamp(header[3]);
 
-		const fromHeader = parseTimestamp(header[2]);
 		excerpts.push({
-			id: typeof payload.id === "string" && payload.id ? payload.id : excerptIdFor(page, text),
+			id: typeof payload.id === "string" && payload.id ? payload.id : fallbackId,
 			page,
 			text,
-			rects: rectsFromPayload(payload.rects),
+			rects: image ? [] : rectsFromPayload(payload.rects),
 			created:
 				fromHeader ?? (Number.isFinite(Number(payload.created)) ? Number(payload.created) : Date.now()),
-			selection: typeof payload.sel === "string" && payload.sel ? payload.sel : null,
+			selection: image ? null : typeof payload.sel === "string" && payload.sel ? payload.sel : null,
+			image: image ?? null,
 		});
 	}
 
@@ -380,5 +444,12 @@ export function stripFrontmatter(content: string): string {
 	return parseFrontmatter(content).body;
 }
 
-export { LEGACY_COMMENT_RE_G };
-export const __testing = { LEGACY_COMMENT_RE, LEGACY_COMMENT_RE_G, CALLOUT_HEADER_RE, parseFrontmatter };
+export { LEGACY_COMMENT_RE_G, META_RE_G };
+export const __testing = {
+	META_RE,
+	META_RE_G,
+	LEGACY_COMMENT_RE,
+	LEGACY_COMMENT_RE_G,
+	CALLOUT_HEADER_RE,
+	parseFrontmatter,
+};

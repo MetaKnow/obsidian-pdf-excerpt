@@ -4,7 +4,7 @@
 
 import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import type PdfExcerptPlugin from "./main";
-import { formatTimestamp, type Excerpt } from "./excerpt-markdown";
+import { formatTimestamp, isImageExcerpt, type Excerpt } from "./excerpt-markdown";
 
 export const VIEW_TYPE_PDF_EXCERPT = "pdf-excerpt-view";
 
@@ -93,6 +93,11 @@ export class PdfExcerptSidebarView extends ItemView {
 		const actions = titleRow.createDiv({ cls: "pdf-excerpt-title-actions" });
 
 		if (this.pdf) {
+			const shot = actions.createEl("button", { cls: "clickable-icon" });
+			setIcon(shot, "scissors");
+			shot.setAttr("aria-label", "截图并加入摘录笔记");
+			shot.addEventListener("click", () => void this.plugin.captureScreenshot());
+
 			const openNote = actions.createEl("button", { cls: "clickable-icon" });
 			setIcon(openNote, "file-text");
 			openNote.setAttr("aria-label", "打开摘录笔记");
@@ -103,8 +108,8 @@ export class PdfExcerptSidebarView extends ItemView {
 
 		const exportBtn = actions.createEl("button", { cls: "clickable-icon" });
 		setIcon(exportBtn, "download");
-		exportBtn.setAttr("aria-label", "导出全部摘录");
-		exportBtn.addEventListener("click", () => void this.plugin.exportAll());
+		exportBtn.setAttr("aria-label", "导出摘录文件（自己选择保存位置）");
+		exportBtn.addEventListener("click", () => void this.plugin.exportCurrentNote());
 
 		const refreshBtn = actions.createEl("button", { cls: "clickable-icon" });
 		setIcon(refreshBtn, "refresh-cw");
@@ -175,14 +180,17 @@ export class PdfExcerptSidebarView extends ItemView {
 		head.createSpan({ cls: "pdf-excerpt-time", text: formatTimestamp(excerpt.created) });
 
 		const actions = head.createDiv({ cls: "pdf-excerpt-card-actions" });
+		const image = isImageExcerpt(excerpt);
 
-		const locate = actions.createEl("button", { cls: "clickable-icon" });
-		setIcon(locate, "crosshair");
-		locate.setAttr("aria-label", "在 PDF 中定位");
-		locate.addEventListener("click", (evt) => {
-			evt.stopPropagation();
-			void this.plugin.locateExcerpt(excerpt);
-		});
+		if (!image) {
+			const locate = actions.createEl("button", { cls: "clickable-icon" });
+			setIcon(locate, "crosshair");
+			locate.setAttr("aria-label", "在 PDF 中定位");
+			locate.addEventListener("click", (evt) => {
+				evt.stopPropagation();
+				void this.plugin.locateExcerpt(excerpt);
+			});
+		}
 
 		const copy = actions.createEl("button", { cls: "clickable-icon" });
 		setIcon(copy, "copy");
@@ -201,9 +209,21 @@ export class PdfExcerptSidebarView extends ItemView {
 		});
 
 		const body = card.createDiv({ cls: "pdf-excerpt-card-text" });
-		body.setText(excerpt.text);
+		if (image) {
+			card.classList.add("is-image");
+			head.querySelector(".pdf-excerpt-page")?.setText(`第 ${excerpt.page} 页 · 截图`);
+			const img = body.createEl("img", { cls: "pdf-excerpt-card-image" });
+			img.src = this.plugin.imageUrlFor(excerpt);
+			img.alt = "摘录截图";
+			body.createDiv({ cls: "pdf-excerpt-card-path", text: excerpt.image ?? "" });
+		} else {
+			body.setText(excerpt.text);
+		}
 
-		card.addEventListener("click", () => void this.plugin.locateExcerpt(excerpt));
+		card.addEventListener("click", () => {
+			if (image) void this.plugin.openExcerptNote(this.pdf as TFile);
+			else void this.plugin.locateExcerpt(excerpt);
+		});
 		return card;
 	}
 

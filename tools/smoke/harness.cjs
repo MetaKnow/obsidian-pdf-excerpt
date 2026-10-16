@@ -79,9 +79,24 @@ window.Range.prototype.getBoundingClientRect = function getBoundingClientRect() 
 };
 
 const obsidianStub = require("./obsidian-stub.cjs");
+// Stands in for Electron's native save dialog. The plugin reaches it through
+// `require("electron").remote.dialog`, so intercept that request.
+const fakeSaveDialog = {
+	calls: [],
+	/** @type {{canceled: boolean, filePath?: string}} */
+	next: { canceled: true },
+	async showSaveDialog(options) {
+		this.calls.push(options);
+		return this.next;
+	},
+};
+const fakeElectron = { remote: { dialog: fakeSaveDialog } };
+
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
 	if (request === "obsidian") return obsidianStub;
+	if (request === "electron") return fakeElectron;
+	if (request === "@electron/remote") return fakeElectron.remote;
 	return originalLoad.call(this, request, parent, isMain);
 };
 
@@ -213,30 +228,14 @@ function noticeMatching(re) {
 		dir: ".obsidian/plugins/pdf-excerpt",
 	});
 
-const GEOMETRY_PATH = ".obsidian/plugins/pdf-excerpt/geometry.json";
+const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 /** Geometry writes are debounced; flush the store so the file is on disk. */
-async function flushGeometry() {
-	if (plugin.geometry && typeof plugin.geometry.flush === "function") {
-		await plugin.geometry.flush();
-		return;
-	}
-	await new Promise((resolve) => setTimeout(resolve, 500));
-}
-
-/** Reads the persisted geometry for one note, straight from the data file. */
-function storedGeometry(notePath) {
-	const raw = app.vault.adapter.files.get(GEOMETRY_PATH);
-	assert.ok(raw, `geometry.json written; adapter files: ${[...app.vault.adapter.files.keys()].join(", ")}`);
-	const parsed = JSON.parse(raw);
-	return parsed.notes[notePath];
-}
-
 	/* ---- lifecycle ------------------------------------------------- */
 
 	await check("onload() completes and registers everything", async () => {
 		await plugin.onload();
-		assert.equal(plugin.commands.length, 9, "commands registered");
+		assert.equal(plugin.commands.length, 10, "commands registered");
 		assert.equal(plugin.views.length, 1, "sidebar view registered");
 		assert.equal(plugin.settingTabs.length, 1, "settings tab registered");
 		assert.equal(plugin.ribbonIcons.length, 1, "left ribbon icon registered");
@@ -310,33 +309,30 @@ function storedGeometry(notePath) {
 			"back-link uses Obsidian's own link format",
 		);
 		assert.ok(!body.includes("<!--"), "no HTML comment anywhere in the note");
-		assert.ok(!body.includes("rects"), "no geometry payload in the note");
+		assert.match(body, /^%% pdf-excerpt \{/m, "geometry rides in a hidden %% comment");
 
-		// The geometry moved to the plugin's own data file, keyed by note + excerpt.
-		await flushGeometry();
-		const entries = storedGeometry(notePath);
-		assert.ok(entries, "geometry entry for the note");
-		const ids = Object.keys(entries);
-		assert.equal(ids.length, 1, "one excerpt's geometry");
-		const meta = entries[ids[0]];
-		assert.equal(meta.page, 1);
-		assert.equal(meta.rects.length, 2, "one rect per selected line");
+		// Obsidian hides %%...%% in both Live Preview and Reading view, so the note
+		// stays clean while the geometry still travels with the file.
+		META_RE.lastIndex = 0;
+		const metas = [...body.matchAll(META_RE)].map((m) => JSON.parse(m[1]));
+		assert.equal(metas.length, 1, "one meta line");
+		assert.equal(metas[0].page, 1);
+		assert.equal(metas[0].rects.length, 2, "one rect per selected line");
 		// Stored as 4-decimal page fractions, so compare at that precision.
-		closeTo(meta.rects[0].x, 96 / 816, "x");
-		closeTo(meta.rects[0].y, 208 / 1056, "y");
-		closeTo(meta.rects[0].w, 208 / 816, "w");
-		closeTo(meta.rects[0].h, 16 / 1056, "h");
-		closeTo(meta.rects[1].y, 226 / 1056, "second line y");
-		closeTo(meta.rects[1].w, 128 / 816, "second line w");
+		closeTo(metas[0].rects[0][0], 96 / 816, "x");
+		closeTo(metas[0].rects[0][1], 208 / 1056, "y");
+		closeTo(metas[0].rects[0][2], 208 / 816, "w");
+		closeTo(metas[0].rects[0][3], 16 / 1056, "h");
+		closeTo(metas[0].rects[1][1], 226 / 1056, "second line y");
+		closeTo(metas[0].rects[1][2], 128 / 816, "second line w");
 
 		assert.equal(await plugin.store.excerptsFor(pdf).then((e) => e.length), 1);
 	});
 
-	await check("geometry is re-attached on a cold read of the note", async () => {
+	await check("geometry survives a cold read of the note", async () => {
 		plugin.store.clearCache();
 		const [excerpt] = await plugin.store.excerptsFor(pdf);
-		// The note itself carries no rects, so this can only come from the data file.
-		assert.equal(excerpt.rects.length, 2, "rects restored from geometry.json");
+		assert.equal(excerpt.rects.length, 2, "rects re-read from the note itself");
 		closeTo(excerpt.rects[0].x, 96 / 816, "x after reload");
 	});
 
@@ -364,16 +360,15 @@ function storedGeometry(notePath) {
 
 		const command = plugin.commands.find((c) => c.id === "migrate-legacy-excerpt-notes");
 		command.callback();
-		// The command is fire-and-forget: let its async chain settle, then flush
-		// the write it scheduled (the writer is debounced by 400 ms).
+		// The command is fire-and-forget: let its async chain settle.
 		await tick();
 		await tick();
-		await flushGeometry();
 
 		const after = app.vault.files.get("摘录知识库/Stale.md")._content;
-		assert.ok(!after.includes("<!--"), "comment stripped");
+		assert.ok(!after.includes("<!--"), "HTML comment stripped");
 		assert.match(after, /> stale text/, "the excerpt itself is untouched");
-		assert.ok(storedGeometry("摘录知识库/Stale.md")?.estale, "geometry captured first");
+		assert.match(after, /^%% pdf-excerpt \{"id":"estale"/m, "geometry moved into the %% marker");
+		assert.match(after, /"rects":\[\[0\.1,0\.1,0\.2,0\.02\]\]/);
 	});
 
 	await check("a note written by 1.0.0 is migrated on the next save", async () => {
@@ -407,11 +402,14 @@ function storedGeometry(notePath) {
 		assert.equal(loaded.excerpts[0].rects.length, 1, "legacy geometry is read back");
 
 		const rewritten = await plugin.store.save(legacyPdf, loaded);
-		assert.ok(!rewritten._content.includes("<!--"), "the comment is dropped from the note");
-		await flushGeometry();
-		const entries = storedGeometry(legacyPath);
-		assert.ok(entries?.eold, "geometry moved into the data file");
-		assert.equal(entries.eold.selection, "1,0,1,8");
+		const text = rewritten._content;
+		assert.ok(!text.includes("<!--"), "the legacy comment is dropped from the note");
+		META_RE.lastIndex = 0;
+		const [meta] = [...text.matchAll(META_RE)].map((m) => JSON.parse(m[1]));
+		assert.ok(meta, "geometry moved into the %% marker");
+		assert.equal(meta.id, "eold");
+		assert.equal(meta.sel, "1,0,1,8");
+		assert.equal(meta.rects[0][0], 0.2);
 	});
 
 	await check("two same-named PDFs get separate notes with no subfolder", async () => {
@@ -506,28 +504,117 @@ function storedGeometry(notePath) {
 
 	/* ---- export ----------------------------------------------------- */
 
-	await check("导出全部 PDF 摘录为 CSV writes a real file", async () => {
+	await check("导出全部 PDF 摘录为 CSV goes through the save dialog", async () => {
+		const fs = require("node:fs");
+		const os = require("node:os");
+
 		app.metadataCache.frontmatter.set("摘录知识库/Attention Is Full.md", {
 			type: "pdf-excerpt",
 			source: "papers/Attention Is Full.pdf",
 		});
-		await plugin.exportAll("csv");
-		const exported = [...app.vault.files.keys()].find((p) => p.endsWith(".csv"));
-		assert.ok(exported, `csv written; files: ${[...app.vault.files.keys()].join(", ")}`);
-		const csv = app.vault.files.get(exported)._content;
-		assert.ok(csv.startsWith("\uFEFF"), "BOM so Excel reads the Chinese headers");
-		assert.match(csv, /"来源文件","标题","页码","摘录","摘录时间"/, "header row");
-		assert.match(csv, /"papers\/Attention Is Full\.pdf"/, "source column");
-		assert.match(csv, /"jumps"/, "the excerpt body");
+
+		fakeSaveDialog.calls.length = 0;
+		const target = path.join(os.tmpdir(), "pdf-excerpt-smoke.csv");
+		fakeSaveDialog.next = { canceled: false, filePath: target };
+		try {
+			await plugin.exportAll("csv");
+
+			assert.equal(fakeSaveDialog.calls.length, 1, "the OS dialog was used, not a fixed folder");
+			assert.match(fakeSaveDialog.calls[0].defaultPath, /\.csv$/, "csv default name");
+			assert.ok(fs.existsSync(target), "the file was written to the chosen path");
+			const csv = fs.readFileSync(target, "utf8");
+			assert.ok(csv.startsWith("\uFEFF"), "BOM so Excel reads the Chinese headers");
+			assert.match(csv, /"来源文件","标题","页码","摘录","摘录时间"/, "header row");
+			assert.match(csv, /"papers\/Attention Is Full\.pdf"/, "source column");
+			assert.match(csv, /"jumps"/, "the excerpt body");
+		} finally {
+			if (fs.existsSync(target)) fs.unlinkSync(target);
+			fakeSaveDialog.next = { canceled: true };
+		}
 	});
 
-	await check("the excerpt note can be opened directly from the plugin", async () => {
+	await check("the excerpt note opens in the main editor area, not the sidebar", async () => {
 		app.workspace.activeFile = pdf;
+		const before = app.workspace.leaves.length;
+		const panelLeaves = new Set(app.workspace.getLeavesOfType("pdf-excerpt-view"));
 		await plugin.openExcerptNote(pdf);
-		assert.equal(
-			app.workspace.activeFile.path,
-			"摘录知识库/Attention Is Full.md",
-			"the note was revealed in the right sidebar",
+
+		assert.equal(app.workspace.leaves.length, before + 1, "a fresh tab was created");
+		const leaf = app.workspace.activeLeaf;
+		assert.ok(leaf, "the new tab is active");
+		assert.equal(leaf._openPath, "摘录知识库/Attention Is Full.md", "the note is loaded there");
+		assert.ok(!panelLeaves.has(leaf), "it is not the side panel leaf");
+	});
+
+	await check("exporting asks the OS where to save, and never opens the file", async () => {
+		const before = app.workspace.leaves.length;
+		fakeSaveDialog.calls.length = 0;
+		fakeSaveDialog.next = { canceled: true };
+
+		app.workspace.activeFile = pdf;
+		await plugin.exportCurrentNote();
+		assert.equal(fakeSaveDialog.calls.length, 1, "the save dialog was used");
+		assert.match(fakeSaveDialog.calls[0].defaultPath, /Attention Is Full\.md$/, "default file name");
+		assert.equal(app.workspace.leaves.length, before, "cancelling opens nothing");
+
+		fakeSaveDialog.next = { canceled: false, filePath: "/tmp/out.md" };
+		await plugin.exportCurrentNote();
+		assert.equal(app.workspace.leaves.length, before, "a successful export opens nothing");
+	});
+
+	await check("a screenshot excerpt lands in the note with no geometry", async () => {
+		const imagePath = await plugin.saveScreenshotFile(pdf, {
+			page: 5,
+			data: new Uint8Array([137, 80, 78, 71]).buffer,
+			width: 12,
+			height: 8,
+		});
+		assert.match(imagePath, /^attachments\//, "the attachment folder is honoured");
+		const binary = app.vault.files.get(imagePath);
+		assert.ok(binary, "the PNG was written through the vault");
+		assert.equal(binary.binary.byteLength, 4, "the bytes survived");
+
+		const result = await plugin.store.addImage(pdf, 5, imagePath);
+		assert.equal(result.status, "added", "images are never treated as duplicates");
+		await plugin.store.addImage(pdf, 5, imagePath);
+		const again = await plugin.store.addImage(pdf, 5, imagePath);
+		assert.equal(again.status, "added", "re-shooting the same page is allowed");
+
+		const note = app.vault.files.get("摘录知识库/Attention Is Full.md")._content;
+		assert.match(note, /\[!quote\] 截图 · 第 5 页/, "marked as a screenshot excerpt");
+		assert.ok(note.includes(`> ![[${imagePath}]]`), "the image is embedded");
+		assert.ok(!new RegExp(`"image"`).test(note), "the image path lives in the embed, not in JSON");
+
+		META_RE.lastIndex = 0;
+		const shotMeta = [...note.matchAll(META_RE)]
+			.map((m) => JSON.parse(m[1]))
+			.find((meta) => meta.page === 5);
+		assert.ok(shotMeta, "the screenshot still gets an id so it can be removed");
+		assert.equal(shotMeta.rects, undefined, "no geometry for screenshots");
+
+		const excerpts = await plugin.store.excerptsFor(pdf);
+		const shot = excerpts.find((e) => e.image);
+		assert.ok(shot, "the sidebar can see it");
+		assert.equal(plugin.imageUrlFor(shot), `app://local/${encodeURIComponent(imagePath)}`);
+	});
+
+	await check("the screenshot button sits left of the open-note button", async () => {
+		const leaf = app.workspace.getRightLeaf(false);
+		const view = plugin.views[0].factory(leaf);
+		view.pdf = pdf;
+		view.excerpts = await plugin.store.excerptsFor(pdf);
+		view.headEl = document.createElement("div");
+		view.renderHead();
+
+		const buttons = [...view.headEl.querySelectorAll(".pdf-excerpt-title-actions button")];
+		const labels = buttons.map((b) => b.getAttribute("aria-label"));
+		const shot = labels.indexOf("截图并加入摘录笔记");
+		const open = labels.indexOf("打开摘录笔记");
+		assert.ok(shot >= 0, `screenshot button present; labels: ${labels.join(" / ")}`);
+		assert.ok(open > shot, "the screenshot button comes first");
+		assert.ok(
+			labels.includes("导出摘录文件（自己选择保存位置）"),
+			"export no longer promises a fixed path",
 		);
 	});
 

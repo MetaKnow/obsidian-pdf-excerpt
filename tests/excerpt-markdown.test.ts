@@ -104,7 +104,7 @@ test("serializeExcerptFile writes frontmatter and callouts", () => {
 	assert.match(out, /> hello world/);
 });
 
-test("the note carries no machine metadata at all", () => {
+test("geometry is parked in a hidden Obsidian comment, never an HTML comment", () => {
 	const out = serializeExcerptFile(
 		makeFile({
 			excerpts: [
@@ -112,13 +112,46 @@ test("the note carries no machine metadata at all", () => {
 			],
 		}),
 	);
-	assert.ok(!out.includes("<!--"), "no HTML comment may appear");
-	assert.ok(!out.includes("pdf-excerpt {"), "no geometry payload may appear");
-	assert.ok(!/\brects?\b/.test(stripFrontmatter(out)), "no rect data in the body");
-	assert.ok(!out.includes("0.1354"), "no raw geometry numbers anywhere");
-	// The one thing that legitimately stays is the native selection subpath,
-	// because it lives inside the wikilink the user clicks.
+	assert.ok(!out.includes("<!--"), "no HTML comment may appear (it shows up in source mode)");
+	assert.match(out, /^%% pdf-excerpt \{.*\} %%$/m, "the payload lives in a %% comment");
+	assert.match(out, /"rects":\[\[0\.1354,0\.4583,0\.7609,0\.0171\]\]/);
+	assert.match(out, /"sel":"36,0,48,21"/);
+	// The human-readable part of the note is a plain quote plus a back-link.
+	const body = stripFrontmatter(out);
+	assert.ok(!/^<!/m.test(body), "the body carries no HTML");
 	assert.match(out, /#page=26&selection=36,0,48,21\|/);
+});
+
+test("%% comments survive a round trip and keep the geometry", () => {
+	const parsed = parseExcerptFile(
+		serializeExcerptFile(
+			makeFile({
+				excerpts: [
+					makeExcerpt({ page: 26, rects: [{ x: 0.1354, y: 0.4583, w: 0.7609, h: 0.0171 }], selection: "36,0,48,21" }),
+				],
+			}),
+		),
+	);
+	assert.equal(parsed.excerpts.length, 1);
+	assert.deepEqual(parsed.excerpts[0].rects, [{ x: 0.1354, y: 0.4583, w: 0.7609, h: 0.0171 }]);
+	assert.equal(parsed.excerpts[0].selection, "36,0,48,21");
+});
+
+test("image excerpts serialize as an embed and never get geometry", () => {
+	const out = serializeExcerptFile(
+		makeFile({
+			excerpts: [
+				makeExcerpt({ page: 7, text: "", rects: [], selection: null, image: "attachments/shot.png" }),
+			],
+		}),
+	);
+	assert.match(out, /> \[!quote\] 截图 · 第 7 页/);
+	assert.ok(out.includes("> ![[attachments/shot.png]]"), "the image is embedded as a wiki link");
+	const parsed = parseExcerptFile(out);
+	assert.equal(parsed.excerpts.length, 1);
+	assert.equal(parsed.excerpts[0].image, "attachments/shot.png");
+	assert.equal(parsed.excerpts[0].text, "");
+	assert.deepEqual(parsed.excerpts[0].rects, []);
 });
 
 test("serialize -> parse round-trips the human-readable fields", () => {
@@ -155,8 +188,10 @@ test("serialize -> parse round-trips the human-readable fields", () => {
 	assert.equal(second.created, T1);
 });
 
-test("geometry is absent from a freshly parsed note (it lives in the plugin data file)", () => {
-	const parsed = parseExcerptFile(serializeExcerptFile(makeFile()));
+test("an excerpt without geometry stays without geometry", () => {
+	const parsed = parseExcerptFile(
+		serializeExcerptFile(makeFile({ excerpts: [makeExcerpt({ rects: [], selection: null })] })),
+	);
 	assert.deepEqual(parsed.excerpts[0].rects, []);
 	assert.equal(parsed.excerpts[0].selection, null);
 });
@@ -273,7 +308,7 @@ test("formatExcerptEntry can omit the back-link", () => {
 		title: "A",
 		linkBuilder: () => "",
 	});
-	assert.equal(entry.includes("[["), false, "nothing but the quote and its text");
+	assert.equal(entry.includes("> [["), false, "nothing but the quote and its text");
 	assert.match(entry, /> abc/);
 });
 

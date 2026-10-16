@@ -12,17 +12,16 @@ import {
 	LEGACY_COMMENT_RE_G,
 	excerptIdFor,
 	excerptKey,
+	isImageExcerpt,
 	normalizeExcerptText,
 	parseExcerptFile,
 	rectOverlapRatio,
-	round4,
 	serializeExcerptFile,
 	shortHash,
 	type Excerpt,
 	type ExcerptFileData,
 	type SerializeOptions,
 } from "./excerpt-markdown";
-import type { GeometryStore, NoteGeometry } from "./geometry-store";
 import type { PageExcerptSlice } from "./pdf-view";
 
 export interface ExcerptStoreSettings {
@@ -73,10 +72,10 @@ export function rectSetCoverage(a: Excerpt["rects"], b: Excerpt["rects"]): numbe
 export function isDuplicateSlice(existing: Excerpt[], slice: PageExcerptSlice): boolean {
 	const key = excerptKey(slice.page, slice.text);
 	for (const e of existing) {
-		if (e.page !== slice.page) continue;
+		if (e.page !== slice.page || isImageExcerpt(e)) continue;
 		if (excerptKey(e.page, e.text) === key) return true;
 	}
-	const samePage = existing.filter((e) => e.page === slice.page);
+	const samePage = existing.filter((e) => e.page === slice.page && !isImageExcerpt(e));
 	if (samePage.length && rectSetCoverage(slice.rects, samePage.map((e) => e.rects).flat()) >= 0.8) return true;
 	return false;
 }
@@ -115,7 +114,6 @@ export class ExcerptStore {
 		private app: App,
 		private getSettings: () => ExcerptStoreSettings,
 		private linkBuilder?: SerializeOptions["linkBuilder"],
-		private geometry?: GeometryStore,
 	) {}
 
 	/* ---------------- paths ---------------- */
@@ -222,16 +220,6 @@ export class ExcerptStore {
 		data.title = data.title || this.titleFor(pdf);
 		if (!data.tags?.length) data.tags = this.getSettings().tags;
 
-		// The note carries no geometry, so re-attach it from the plugin data file.
-		// On the first load after an upgrade this also picks up the legacy
-		// geometry comments, which save() then persists here and drops.
-		for (const excerpt of data.excerpts) {
-			const geometry = this.geometry?.get(path, excerpt.id);
-			if (!geometry) continue;
-			excerpt.rects = geometry.rects;
-			excerpt.selection = geometry.selection;
-		}
-
 		this.claimed.set(path, pdf.path);
 		this.cache.set(path, { mtime: file.stat.mtime, size: file.stat.size, data });
 		return data;
@@ -260,8 +248,6 @@ export class ExcerptStore {
 			await this.ensureFolderFor(path);
 			file = await this.app.vault.create(path, content);
 		}
-
-		this.geometry?.setNote(path, buildGeometry(data.excerpts));
 
 		const stored = { ...data, source: pdf.path, updated: Date.now() };
 		this.claimed.set(path, pdf.path);
@@ -317,6 +303,32 @@ export class ExcerptStore {
 		return { status: "added", noteFile, noteCreated: !existedBefore, added, duplicates };
 	}
 
+	/**
+	 * A screenshot excerpt: an image embed with no text, no geometry and no
+	 * duplicate rule. `imagePath` is a vault path.
+	 */
+	async addImage(pdf: TFile, page: number, imagePath: string): Promise<AddResult> {
+		const path = this.notePathFor(pdf);
+		const existedBefore = this.app.vault.getAbstractFileByPath(path) instanceof TFile;
+		const data = await this.load(pdf, { fresh: true });
+
+		const excerpt: Excerpt = {
+			id: `e${shortHash(`${page}\u0000${imagePath}\u0000${Date.now()}`)}`,
+			page,
+			text: "",
+			rects: [],
+			created: Date.now(),
+			selection: null,
+			image: imagePath,
+		};
+		data.excerpts.push(excerpt);
+		data.updated = Date.now();
+		if (!data.created) data.created = data.updated;
+
+		const noteFile = await this.save(pdf, data);
+		return { status: "added", noteFile, noteCreated: !existedBefore, added: [excerpt], duplicates: 0 };
+	}
+
 	async removeExcerpt(pdf: TFile, id: string): Promise<boolean> {
 		const data = await this.load(pdf, { fresh: true });
 		const index = data.excerpts.findIndex((e) => e.id === id);
@@ -338,38 +350,6 @@ export class ExcerptStore {
 		return true;
 	}
 
-	/**
-	 * One-off cleanup for notes written by 1.0.0, which carried the geometry in a
-	 * trailing HTML comment. Re-saving each such note moves its geometry into the
-	 * plugin data file and rewrites the note without the comment. Idempotent.
-	 */
-	async migrateLegacyNotes(): Promise<{ scanned: number; migrated: number }> {
-		let scanned = 0;
-		let migrated = 0;
-		for (const file of this.app.vault.getMarkdownFiles()) {
-			const content = await this.app.vault.cachedRead(file);
-			LEGACY_COMMENT_RE_G.lastIndex = 0;
-			// Cheap pre-filter that does not rely on the metadata cache being warm.
-			if (!LEGACY_COMMENT_RE_G.test(content)) continue;
-			scanned++;
-			try {
-				const data = parseExcerptFile(content);
-				const cache = this.app.metadataCache.getFileCache(file)?.frontmatter;
-				const source = data.source || (typeof cache?.source === "string" ? cache.source : "");
-				const resolved = source ? this.app.vault.getAbstractFileByPath(source) : null;
-				if (!(resolved instanceof TFile)) {
-					console.warn(`[pdf-excerpt] 无法确定摘录笔记对应的 PDF：${file.path}`);
-					continue;
-				}
-				await this.save(resolved, data);
-				migrated++;
-			} catch (error) {
-				console.error(`[pdf-excerpt] 迁移失败：${file.path}`, error);
-			}
-		}
-		return { scanned, migrated };
-	}
-
 	async clearCache(): Promise<void> {
 		this.cache.clear();
 		this.claimed.clear();
@@ -378,23 +358,42 @@ export class ExcerptStore {
 	invalidate(path: string): void {
 		this.cache.delete(path);
 	}
-}
 
-/** Geometry is persisted rounded to 4 decimals; the note text is the real data. */
-function buildGeometry(excerpts: Excerpt[]): NoteGeometry {
-	const geometry: NoteGeometry = {};
-	for (const excerpt of excerpts) {
-		if (!excerpt.rects.length && !excerpt.selection) continue;
-		geometry[excerpt.id] = {
-			page: excerpt.page,
-			rects: excerpt.rects.map((r) => ({
-				x: round4(r.x),
-				y: round4(r.y),
-				w: round4(r.w),
-				h: round4(r.h),
-			})),
-			selection: excerpt.selection ?? null,
-		};
+	/**
+	 * 1.0.0 and 1.0.1 kept each excerpt's geometry in a trailing HTML comment,
+	 * which is visible in source mode. Rewrite those notes in place so the same
+	 * data is carried by the hidden `%%` marker instead.
+	 */
+	async migrateLegacyNotes(): Promise<{ scanned: number; migrated: number }> {
+		let scanned = 0;
+		let migrated = 0;
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			let content: string;
+			try {
+				content = await this.app.vault.cachedRead(file);
+			} catch {
+				continue;
+			}
+			LEGACY_COMMENT_RE_G.lastIndex = 0;
+			if (!LEGACY_COMMENT_RE_G.test(content)) continue;
+			scanned++;
+
+			const data = parseExcerptFile(content);
+			if (!data.excerpts.length) continue;
+			try {
+				const rewritten = serializeExcerptFile(data, {
+					source: data.source,
+					title: data.title,
+					linkBuilder: this.linkBuilder,
+					tags: data.tags?.length ? data.tags : this.getSettings().tags,
+				});
+				await this.app.vault.modify(file, rewritten);
+				this.cache.delete(file.path);
+				migrated++;
+			} catch (error) {
+				console.error(`[pdf-excerpt] 迁移失败：${file.path}`, error);
+			}
+		}
+		return { scanned, migrated };
 	}
-	return geometry;
 }

@@ -198,3 +198,40 @@
 		animation-iteration-count: 1;
 	}
 }
+
+/* ------------------------------------------------------------------ */
+/* Sidebar cards                                                       */
+/* ------------------------------------------------------------------ */
+
+.pdf-excerpt-card-image {
+	display: block;
+	max-width: 100%;
+	border-radius: var(--radius-s);
+	border: 1px solid var(--background-modifier-border);
+}
+
+.pdf-excerpt-card-path {
+	margin-top: var(--size-2-1);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	word-break: break-all;
+}
+
+/* ------------------------------------------------------------------ */
+/* Region screenshot overlay                                           */
+/* ------------------------------------------------------------------ */
+
+.pdf-excerpt-shot {
+	position: absolute;
+	z-index: 6;
+	cursor: crosshair;
+	background-color: rgba(0, 0, 0, 0.08);
+	touch-action: none;
+}
+
+.pdf-excerpt-shot-box {
+	position: absolute;
+	pointer-events: none;
+	border: 1px solid var(--interactive-accent);
+	background-color: rgba(var(--interactive-accent-rgb), 0.18);
+}
