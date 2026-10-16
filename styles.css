@@ -1,0 +1,200 @@
+/* ==================================================================
+   PDF 摘录 (PDF Excerpt)
+   ================================================================== */
+
+/* ---------------------------- side panel --------------------------- */
+
+.pdf-excerpt-sidebar {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	padding: 0;
+	height: 100%;
+	overflow: hidden;
+}
+
+.pdf-excerpt-sidebar-head {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	padding: var(--size-4-3) var(--size-4-3) var(--size-4-2);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex: 0 0 auto;
+}
+
+.pdf-excerpt-title-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.pdf-excerpt-title {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pdf-excerpt-title-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex: 0 0 auto;
+}
+
+.pdf-excerpt-title-actions .clickable-icon {
+	--icon-size: var(--icon-s);
+	padding: 2px;
+}
+
+.pdf-excerpt-search {
+	width: 100%;
+	font-size: var(--font-ui-smaller);
+}
+
+.pdf-excerpt-list {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: var(--size-4-2);
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.pdf-excerpt-sidebar-foot {
+	flex: 0 0 auto;
+	padding: var(--size-4-1) var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.pdf-excerpt-empty {
+	padding: var(--size-4-6) var(--size-4-3);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	line-height: 1.6;
+	text-align: center;
+}
+
+/* ------------------------------ cards ------------------------------ */
+
+.pdf-excerpt-card {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	padding: var(--size-4-2);
+	cursor: pointer;
+	transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.pdf-excerpt-card:hover {
+	border-color: var(--interactive-accent);
+	background-color: var(--background-secondary-alt);
+}
+
+.pdf-excerpt-card-head {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	margin-bottom: var(--size-2-2);
+}
+
+.pdf-excerpt-page {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-accent);
+	background-color: var(--background-modifier-hover);
+	border-radius: var(--radius-s);
+	padding: 0 6px;
+	line-height: 1.7;
+}
+
+.pdf-excerpt-time {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pdf-excerpt-card-actions {
+	display: flex;
+	align-items: center;
+	gap: 0;
+	flex: 0 0 auto;
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+
+.pdf-excerpt-card:hover .pdf-excerpt-card-actions,
+.pdf-excerpt-card:focus-within .pdf-excerpt-card-actions {
+	opacity: 1;
+}
+
+.pdf-excerpt-card-actions .clickable-icon {
+	--icon-size: var(--icon-xs);
+	padding: 2px;
+}
+
+.pdf-excerpt-card-text {
+	font-size: var(--font-ui-smaller);
+	line-height: 1.55;
+	color: var(--text-normal);
+	display: -webkit-box;
+	-webkit-line-clamp: 6;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* --------------------------- PDF overlay --------------------------- */
+
+.pdf-excerpt-layer {
+	position: absolute;
+	pointer-events: none;
+	z-index: 3;
+}
+
+.pdf-excerpt-hl {
+	position: absolute;
+	border-radius: 2px;
+	mix-blend-mode: multiply;
+	transition: background-color 120ms ease;
+}
+
+.theme-dark .pdf-excerpt-hl {
+	mix-blend-mode: screen;
+	opacity: 0.75;
+}
+
+.pdf-excerpt-hl.is-flashing {
+	animation: pdf-excerpt-flash 320ms ease-in-out 3;
+}
+
+@keyframes pdf-excerpt-flash {
+	0%,
+	100% {
+		opacity: 1;
+		box-shadow: 0 0 0 0 rgba(255, 212, 0, 0);
+	}
+	50% {
+		opacity: 0.35;
+		box-shadow: 0 0 0 3px rgba(255, 212, 0, 0.65);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.pdf-excerpt-hl.is-flashing {
+		animation-duration: 1ms;
+		animation-iteration-count: 1;
+	}
+}

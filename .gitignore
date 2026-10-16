@@ -1,0 +1,16 @@
+# Build output
+main.js
+*.js.map
+
+# Dependencies
+node_modules/
+
+# Obsidian
+data.json
+.hotreload/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.log

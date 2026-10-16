@@ -1,0 +1,10 @@
+{
+  "id": "pdf-excerpt",
+  "name": "PDF Excerpt",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Right-click selected text in a PDF to excerpt it into a per-PDF markdown note. Excerpts stay highlighted in the PDF, duplicates are blocked, and a side panel can export them",
+  "author": "MetaKnow",
+  "authorUrl": "https://github.com/MetaKnow",
+  "isDesktopOnly": true
+}
