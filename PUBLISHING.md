@@ -160,8 +160,8 @@ gh release create 1.0.0 \
 目录站读取的是**默认分支 HEAD 上的 `manifest.json`**，再按 manifest 里的 `version`
 去找对应 tag 的 Release 下载文件，所以这三条缺一不可：
 
-- [ ] `manifest.json` 在默认分支上且准确（`id: pdf-excerpt`、`version: 1.0.0`）
-- [ ] 存在 tag 与 `version` 一字不差的 Release（`1.0.0`）
+- [ ] `manifest.json` 在默认分支上且准确（`id: pdf-excerpt`、`version: 1.0.1`）
+- [ ] 存在 tag 与 `version` 一字不差的 Release（`1.0.1`）
 - [ ] Release 里带着 `main.js`、`manifest.json`、`styles.css`
 
 命名规则（表单里填的描述同样受约束）：
@@ -177,6 +177,14 @@ gh release create 1.0.0 \
 - 有问题 → **改仓库 → 发布一个版本号递增的新 Release**（不是开新 PR）
 - 全部通过并被审核后，用户就能在 Obsidian 里搜索安装
 
+> 注意：提交页在**审核期间**不会出现 `Request review` / `Review branch` / `Check for new releases`
+> 这些菜单项——它们是**已经上架的条目**才有的（见官方
+> [Manage your plugin or theme](https://docs.obsidian.md/community-directory/manage-your-plugin-or-theme)）。
+> 所以首次提交阶段看到警告时，唯一的重扫办法就是发一个新版本（官方原话：*Address any items in
+> your repository, then publish a new release to trigger a fresh review.*）。
+> 1.0.1 就是这么发的：只改文档与元数据、不改代码，专门用来触发重扫并让 Release 里的
+> `manifest.json` 带上修正。
+
 之后每次发新版本都**不需要**再回来提交一次，见下面第 7 节。
 
 ## 6. 审核常见被拒原因（发布前自查）
@@ -186,7 +194,7 @@ gh release create 1.0.0 \
 | 描述或名字里出现 `Obsidian` | 已避开 |
 | `id` 含 `obsidian` 或与仓库不符 | `pdf-excerpt`，一致 |
 | Release 里缺 `main.js` | CI 会自动附上 |
-| tag 和 `manifest.json` 版本不一致 | 都是 `1.0.0` |
+| tag 和 `manifest.json` 版本不一致 | 都是 `1.0.1`（发新版时两者一起改） |
 | 仓库没 README / 没说明怎么用 | README.md 已写全 |
 | 没有 LICENSE | MIT 已加 |
 | 移动端插件却标 `isDesktopOnly` | 本插件依赖 Electron 的 PDF 视图，标 `true` 正确 |
