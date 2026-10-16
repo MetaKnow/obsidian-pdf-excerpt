@@ -223,8 +223,9 @@ class Workspace extends Emitter {
 	_newLeaf() {
 		const leaf = {
 			view: { getViewType: () => "empty", containerEl: document.createElement("div") },
-			openFile: async (file) => {
+			openFile: async (file, openState) => {
 				leaf._openPath = file.path;
+				leaf._openState = openState;
 				this.activeFile = file;
 			},
 			setViewState: async (state) => {

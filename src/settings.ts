@@ -6,8 +6,10 @@ export interface PdfExcerptSettings {
 	excerptFolder: string;
 	/** Folder for exported standalone notes. Empty string = vault root. */
 	exportFolder: string;
-	/** Open the note pinned in a split right after the first excerpt of a PDF. */
+	/** Open the note in the main area right after the first excerpt of a PDF. */
 	openNoteOnFirstExcerpt: boolean;
+	/** Open the excerpt note in reading view instead of the editor. */
+	openNoteInReadingView: boolean;
 	/** Briefly flash the excerpted region in the PDF as confirmation. */
 	flashOnExcerpt: boolean;
 	/** Colour of the in-PDF highlight. */
@@ -20,6 +22,7 @@ export const DEFAULT_SETTINGS: PdfExcerptSettings = {
 	excerptFolder: "摘录知识库",
 	exportFolder: "摘录知识库/导出",
 	openNoteOnFirstExcerpt: true,
+	openNoteInReadingView: true,
 	flashOnExcerpt: true,
 	highlightColor: "#ffd400",
 	showRibbonIcon: true,
@@ -65,10 +68,20 @@ export class PdfExcerptSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("首次摘录时自动打开笔记")
-			.setDesc("当某个 PDF 还没有摘录笔记时，第一次摘录后自动在右侧打开该笔记。")
+			.setDesc("当某个 PDF 还没有摘录笔记时，第一次摘录后自动在主编辑区打开该笔记。")
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.openNoteOnFirstExcerpt).onChange(async (value) => {
 					this.plugin.settings.openNoteOnFirstExcerpt = value;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("以阅读视图打开摘录笔记")
+			.setDesc("打开摘录笔记时默认使用阅读视图，而不是编辑模式。")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.openNoteInReadingView).onChange(async (value) => {
+					this.plugin.settings.openNoteInReadingView = value;
 					await this.plugin.saveSettings();
 				}),
 			);

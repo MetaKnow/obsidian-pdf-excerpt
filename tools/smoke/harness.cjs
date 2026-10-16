@@ -741,6 +741,26 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		);
 	});
 
+	await check("the excerpt note opens in reading view, and the setting turns that off", async () => {
+		app.workspace.activeFile = pdf;
+
+		await plugin.openExcerptNote(pdf);
+		assert.equal(
+			app.workspace.activeLeaf._openState?.eState?.mode,
+			"preview",
+			"opened in reading view by default",
+		);
+
+		plugin.settings.openNoteInReadingView = false;
+		await plugin.openExcerptNote(pdf);
+		assert.equal(
+			app.workspace.activeLeaf._openState?.eState?.mode,
+			"source",
+			"the setting can request edit mode instead",
+		);
+		plugin.settings.openNoteInReadingView = true;
+	});
+
 	await check("settings tab renders every control", async () => {
 		const tab = plugin.settingTabs[0];
 		tab.display();

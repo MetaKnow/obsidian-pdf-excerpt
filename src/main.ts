@@ -527,7 +527,14 @@ export default class PdfExcerptPlugin extends Plugin {
 	 */
 	private async openNoteInMainArea(file: TFile): Promise<void> {
 		const leaf = this.app.workspace.getLeaf("tab");
-		await leaf.openFile(file);
+		// "preview" is Obsidian's reading view. It is applied as ephemeral state so
+		// it only affects this leaf and never the user's default editing mode.
+		const mode = this.settings.openNoteInReadingView ? "preview" : "source";
+		await leaf.openFile(file, { eState: { mode } });
+		// A leaf that was already open can ignore the state handed to openFile, so
+		// apply it to the view as well.
+		const view = leaf.view as { setEphemeralState?: (state: unknown) => void };
+		if (typeof view?.setEphemeralState === "function") view.setEphemeralState({ mode });
 		this.app.workspace.setActiveLeaf(leaf, { focus: true });
 	}
 
