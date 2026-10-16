@@ -42,6 +42,17 @@ npm run build      # 产出 main.js
 
 开发时用 `npm run dev`，esbuild 会监听 `src/` 并在改动后自动重新打包。
 
+**注意**：`npm run build` 只把产物写到仓库根目录，Obsidian 加载的是仓库里的那份拷贝，
+两者不是同一个文件。改完代码记得把它同步过去，否则 Obsidian 跑的还是旧版本：
+
+```bash
+npm run deploy -- --to "<你的仓库>/.obsidian/plugins/pdf-excerpt"
+```
+
+也可以把目标目录写进仓库根目录的 `.deploy-target`（已 gitignore），
+之后直接 `npm run deploy`；再用 `--to` 或环境变量 `OBSIDIAN_PLUGIN_DIR` 覆盖。
+同步后回 Obsidian 执行一次「重新加载应用」（`Ctrl/Cmd+P`）。
+
 ---
 
 ## 使用

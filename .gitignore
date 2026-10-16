@@ -15,3 +15,6 @@ geometry.json
 .vscode/
 .idea/
 *.log
+
+# Local deploy target (my vault)
+.deploy-target

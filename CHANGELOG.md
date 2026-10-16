@@ -26,3 +26,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   不再误开摘录笔记。
 - 命令面板命令：加入摘录、截图并加入摘录笔记、打开摘录笔记、打开摘录面板、
   显示/隐藏高亮、导出全部摘录、迁移旧版摘录笔记。
+
+### 开发
+
+- 新增 `npm run deploy`：把构建产物同步到仓库的插件目录，并可写入 `.deploy-target` 记住目标。
