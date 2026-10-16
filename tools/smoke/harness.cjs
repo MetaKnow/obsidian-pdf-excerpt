@@ -343,16 +343,30 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 		const body = note._content;
 		assert.match(body, /^---\ntype: pdf-excerpt\n/, "frontmatter opens the file");
-		assert.match(body, /source: "papers\/Attention Is Full\.pdf"/);
+		// The PDF is copied into the note's own folder and the note cites the
+		// copy, so the folder is self-contained.
+		const copyPath = "摘录知识库/Attention Is Full/Attention Is Full.pdf";
+		const copy = app.vault.files.get(copyPath);
+		assert.ok(copy, `the PDF itself was copied into the folder; files: ${[...app.vault.files.keys()].join(", ")}`);
+		assert.deepEqual(
+			Buffer.from(await app.vault.readBinary(copy)),
+			Buffer.from(await app.vault.readBinary(pdf)),
+			"the copy is byte-identical to the original",
+		);
+		assert.match(body, /source: "摘录知识库\/Attention Is Full\/Attention Is Full\.pdf"/);
 		assert.match(body, /# 摘录 · Attention Is Full/);
 		assert.match(body, /> quick brown fox jumps ove/, "the selected text is quoted");
 		assert.match(
 			body,
-			/\[\[papers\/Attention Is Full\.pdf#page=1\|Attention Is Full, 第 1 页\]\]/,
-			"back-link uses Obsidian's own link format",
+			/\[\[摘录知识库\/Attention Is Full\/Attention Is Full\.pdf#page=1\|Attention Is Full, 第 1 页\]\]/,
+			"back-link points at the copy, in Obsidian's own link format",
 		);
 		assert.ok(!body.includes("<!--"), "no HTML comment anywhere in the note");
 		assert.match(body, /^%% pdf-excerpt \{/m, "geometry rides in a hidden %% comment");
+		assert.ok(
+			noticeMatching(/PDF 已复制进摘录文件夹/),
+			`the copy is announced: ${obsidianStub.Notice.instances.map((n) => n.message).join(" | ")}`,
+		);
 
 		// Obsidian hides %%...%% in both Live Preview and Reading view, so the note
 		// stays clean while the geometry still travels with the file.
@@ -485,6 +499,30 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		// `摘录知识库/Stale.md` was written by the older flat layout above.
 		assert.ok(app.vault.files.has("摘录知识库/Stale.md"), "a flat note is present to tidy");
 
+		// The user's real situation: a flat note whose PDF lives outside the vault.
+		const outsideDisk = path.join(require("node:os").tmpdir(), "Outside Old.pdf");
+		require("node:fs").writeFileSync(outsideDisk, "%PDF-1.4 outside old");
+		await app.vault.create(
+			"摘录知识库/Outside Old.md",
+			[
+				"---",
+				"type: pdf-excerpt",
+				`source: "file:${outsideDisk}"`,
+				'title: "Outside Old"',
+				"---",
+				"",
+				"# 摘录 · Outside Old",
+				"",
+				"> [!quote] 第 2 页 · 2024-01-02 03:04",
+				"> outside old text",
+				">",
+				`> [[file:${outsideDisk}#page=2|Outside Old, 第 2 页]]`,
+				"",
+				'%% pdf-excerpt {"id":"eoutsideold","page":2,"rects":[],"created":1} %%',
+				"",
+			].join("\n"),
+		);
+
 		const command = plugin.commands.find((c) => c.id === "tidy-excerpt-notes-into-folders");
 		assert.ok(command, "the tidy command is registered");
 		command.callback();
@@ -502,6 +540,81 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 			!app.vault.files.has("摘录知识库/Attention Is Full/Attention Is Full.md.md"),
 			"already-nested notes are left alone",
 		);
+
+		// Tidying brings the PDF along and repoints the note at the copy.
+		const staleCopy = app.vault.files.get("摘录知识库/Stale/Stale.pdf");
+		assert.ok(staleCopy, `the PDF came along; files: ${[...app.vault.files.keys()].join(", ")}`);
+		assert.deepEqual(
+			Buffer.from(await app.vault.readBinary(staleCopy)),
+			Buffer.from(await app.vault.readBinary(app.vault.files.get("papers/Stale.pdf"))),
+			"the copied PDF is byte-identical",
+		);
+		assert.match(
+			moved._content,
+			/source: "摘录知识库\/Stale\/Stale\.pdf"/,
+			"the note now cites the copy",
+		);
+		assert.match(
+			moved._content,
+			/\[\[摘录知识库\/Stale\/Stale\.pdf#page=2\|Stale, 第 2 页\]\]/,
+			"the back-link follows the copy",
+		);
+
+		// A note whose source is a file: path is tidied too, and the PDF it names
+		// is copied in from the disk.
+		const outsideNote = app.vault.files.get("摘录知识库/Outside Old/Outside Old.md");
+		assert.ok(outsideNote, `the file: note moved too; files: ${[...app.vault.files.keys()].join(", ")}`);
+		const outsideCopy = app.vault.files.get("摘录知识库/Outside Old/Outside Old.pdf");
+		assert.ok(outsideCopy, "the outside PDF was copied in while tidying");
+		assert.equal(
+			Buffer.from(outsideCopy.binary).toString("utf8"),
+			"%PDF-1.4 outside old",
+			"the copied bytes came from the disk",
+		);
+		assert.match(
+			outsideNote._content,
+			/source: "摘录知识库\/Outside Old\/Outside Old\.pdf"/,
+			"the moved note cites the copy",
+		);
+		require("node:fs").unlinkSync(outsideDisk);
+	});
+
+	await check("a PDF opened from outside the vault is copied in and cited too", async () => {
+		// Obsidian hands the plugin a synthetic TFile whose path is a file: URL,
+		// and its own adapter cannot read those bytes back — they come from disk.
+		// This is the user's real setup: they excerpt PDFs that live outside the vault.
+		const onDisk = path.join(require("node:os").tmpdir(), "Outside Paper.pdf");
+		require("node:fs").writeFileSync(onDisk, "%PDF-1.4 outside");
+		const external = new obsidianStub.TFile(`file:${onDisk}`, "");
+		external._content = null; // make the stub's readBinary fail, as Obsidian's would
+		app.vault.files.set(external.path, external);
+
+		const result = await plugin.store.addSlices(external, [
+			{ page: 3, text: "outside text", rects: [], selection: "0,0,10,10" },
+		]);
+		assert.equal(result.status, "added", `added; status: ${result.status}`);
+
+		const notePath = "摘录知识库/Outside Paper/Outside Paper.md";
+		const note = app.vault.files.get(notePath);
+		assert.ok(note, `note created; files: ${[...app.vault.files.keys()].join(", ")}`);
+		const copyPath = "摘录知识库/Outside Paper/Outside Paper.pdf";
+		assert.ok(app.vault.files.has(copyPath), "the outside PDF was copied into the folder");
+		assert.match(
+			note._content,
+			/source: "摘录知识库\/Outside Paper\/Outside Paper\.pdf"/,
+			"the note cites the in-vault copy, not the file: path",
+		);
+		assert.match(
+			note._content,
+			/\[\[摘录知识库\/Outside Paper\/Outside Paper\.pdf#page=3/,
+			"the back-link follows the copy",
+		);
+		assert.equal(
+			Buffer.from(app.vault.files.get(copyPath).binary).toString("utf8"),
+			"%PDF-1.4 outside",
+			"the bytes came from the file on disk",
+		);
+		require("node:fs").unlinkSync(onDisk);
 	});
 
 	await check("excerpting the same passage again is refused as a duplicate", async () => {
@@ -529,9 +642,14 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		await tick();
 
 		assert.ok(noticeMatching(/已加入摘录/), "success notice shown");
+		assert.ok(!noticeMatching(/PDF 已复制进摘录文件夹/), "the PDF is not copied a second time");
 		const excerpts = await plugin.store.excerptsFor(pdf);
 		assert.equal(excerpts.length, 2);
 		assert.equal(excerpts[1].text, "jumps");
+		const pdfCopies = [...app.vault.files.keys()].filter(
+			(k) => k.startsWith("摘录知识库/Attention Is Full/") && k.endsWith(".pdf"),
+		);
+		assert.equal(pdfCopies.length, 1, `the PDF is copied once, not per excerpt: ${pdfCopies.join(", ")}`);
 	});
 
 	/* ---- highlight overlay ----------------------------------------- */
@@ -586,7 +704,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 
 		app.metadataCache.frontmatter.set("摘录知识库/Attention Is Full/Attention Is Full.md", {
 			type: "pdf-excerpt",
-			source: "papers/Attention Is Full.pdf",
+			source: "摘录知识库/Attention Is Full/Attention Is Full.pdf",
 		});
 
 		fakeSaveDialog.calls.length = 0;
@@ -601,7 +719,11 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 			const csv = fs.readFileSync(target, "utf8");
 			assert.ok(csv.startsWith("\uFEFF"), "BOM so Excel reads the Chinese headers");
 			assert.match(csv, /"来源文件","标题","页码","摘录","摘录时间"/, "header row");
-			assert.match(csv, /"papers\/Attention Is Full\.pdf"/, "source column");
+			assert.match(
+				csv,
+				/"摘录知识库\/Attention Is Full\/Attention Is Full\.pdf"/,
+				"source column cites the copy",
+			);
 			assert.match(csv, /"jumps"/, "the excerpt body");
 		} finally {
 			if (fs.existsSync(target)) fs.unlinkSync(target);

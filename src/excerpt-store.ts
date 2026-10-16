@@ -25,6 +25,31 @@ import {
 } from "./excerpt-markdown";
 import type { PageExcerptSlice } from "./pdf-view";
 
+/**
+ * PDFs opened from outside the vault arrive as a synthetic `file:` TFile that
+ * Obsidian's own adapter may not be able to read back; those bytes come from
+ * the desktop file system instead.
+ */
+function externalPdfPath(path: string): string | null {
+	const raw = path.startsWith("file:") ? path.slice("file:".length) : path;
+	if (!raw.startsWith("/")) return null;
+	try {
+		return decodeURIComponent(raw);
+	} catch {
+		return raw;
+	}
+}
+
+function nodeFs(): typeof import("fs") | null {
+	if (typeof require !== "function") return null;
+	try {
+		return require("fs") as typeof import("fs");
+	} catch (error) {
+		console.warn("[pdf-excerpt] require('fs') 不可用", error);
+		return null;
+	}
+}
+
 export interface ExcerptStoreSettings {
 	excerptFolder: string;
 	tags: string[];
@@ -36,6 +61,8 @@ export interface AddResult {
 	noteCreated: boolean;
 	added: Excerpt[];
 	duplicates: number;
+	/** True when this call pulled the PDF itself into the note's folder. */
+	pdfCopied: boolean;
 	message?: string;
 }
 
@@ -179,8 +206,9 @@ export class ExcerptStore {
 	 * keeps the mapping stable between load() and save().
 	 */
 	private ownsNotePath(path: string, pdf: TFile): boolean {
+		const aliases = this.sourceAliases(path, pdf);
 		const claimedBy = this.claimed.get(path);
-		if (claimedBy !== undefined) return claimedBy === pdf.path;
+		if (claimedBy !== undefined) return aliases.includes(normalizePath(claimedBy));
 
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		if (!(existing instanceof TFile)) return true;
@@ -188,7 +216,19 @@ export class ExcerptStore {
 		const fromCache = this.cache.get(path)?.data.source;
 		const fromVault = this.app.metadataCache.getFileCache(existing)?.frontmatter?.source;
 		const source = fromCache || (typeof fromVault === "string" ? fromVault : "");
-		return !source || normalizePath(source) === pdf.path;
+		return !source || aliases.includes(normalizePath(source));
+	}
+
+	/**
+	 * Every path that legitimately stands in for `pdf` as the `source` of the
+	 * note at `notePath`: the PDF itself, and its copy inside that note's folder.
+	 * Both must resolve to one note, however the user reaches the PDF.
+	 */
+	private sourceAliases(notePath: string, pdf: TFile): string[] {
+		const dir = notePath.split("/").slice(0, -1).join("/");
+		const own = normalizePath(pdf.path);
+		const copy = this.pdfCopyPath(dir, pdf.name);
+		return copy === own ? [own] : [own, copy];
 	}
 
 	titleFor(pdf: TFile): string {
@@ -213,6 +253,102 @@ export class ExcerptStore {
 		const dir = path.split("/").slice(0, -1).join("/");
 		if (!dir) return;
 		await ensureVaultFolder(this.app, dir);
+	}
+
+	/**
+	 * The path a note should cite: this PDF's copy inside its own excerpt folder
+	 * once that copy exists, otherwise the PDF's original location.
+	 */
+	private pdfCopyPath(folder: string, name: string): string {
+		return normalizePath([folder, name].filter(Boolean).join("/"));
+	}
+	private citePathFor(pdf: TFile): string {
+		const folder = this.noteFolderFor(pdf);
+		const own = normalizePath(pdf.path);
+		const copy = this.pdfCopyPath(folder, pdf.name);
+		if (copy === own) return pdf.path;
+		return this.app.vault.getAbstractFileByPath(copy) instanceof TFile ? copy : own;
+	}
+
+	/** Copies `pdf` into `folder` unless it is already there. Returns its path. */
+	private async copyPdfTo(pdf: TFile, folder: string): Promise<string> {
+		const from = normalizePath(pdf.path);
+		const target = this.pdfCopyPath(folder, pdf.name);
+		if (!target || target === from) return from;
+		if (this.app.vault.getAbstractFileByPath(target) instanceof TFile) return target;
+
+		try {
+			await ensureVaultFolder(this.app, folder);
+			await this.app.vault.createBinary(target, await this.readPdfBytes(pdf));
+			return target;
+		} catch (error) {
+			console.error(`[pdf-excerpt] 复制 PDF 到摘录文件夹失败：${from} → ${target}`, error);
+			return from;
+		}
+	}
+
+	/**
+	 * Makes sure the PDF itself lives in its own excerpt folder, so the note and
+	 * the document it quotes always travel together. Returns the path to cite.
+	 */
+	private async readPdfBytes(pdf: TFile): Promise<ArrayBuffer> {
+		try {
+			return await this.app.vault.readBinary(pdf);
+		} catch (error) {
+			const absolute = externalPdfPath(pdf.path);
+			const fs = nodeFs();
+			if (!absolute || !fs) throw error;
+			const buffer = await fs.promises.readFile(absolute);
+			return buffer.buffer.slice(
+				buffer.byteOffset,
+				buffer.byteOffset + buffer.byteLength,
+			) as ArrayBuffer;
+		}
+	}
+
+	/**
+	 * The same, for a note whose `source` points outside the vault (a `file:`
+	 * path). There is no TFile to read, so the bytes come from the disk.
+	 */
+	private async copyExternalPdfTo(source: string, folder: string): Promise<string> {
+		const from = normalizePath(source);
+		const absolute = externalPdfPath(source);
+		const fs = nodeFs();
+		const name = absolute ? absolute.split("/").pop() ?? "" : "";
+		if (!absolute || !fs || !name) return from;
+
+		const target = this.pdfCopyPath(folder, name);
+		if (!target || target === from) return from;
+		if (this.app.vault.getAbstractFileByPath(target) instanceof TFile) return target;
+
+		try {
+			await ensureVaultFolder(this.app, folder);
+			const buffer = await fs.promises.readFile(absolute);
+			await this.app.vault.createBinary(
+				target,
+				buffer.buffer.slice(
+					buffer.byteOffset,
+					buffer.byteOffset + buffer.byteLength,
+				) as ArrayBuffer,
+			);
+			return target;
+		} catch (error) {
+			console.error(`[pdf-excerpt] 复制 PDF 到摘录文件夹失败：${from} → ${target}`, error);
+			return from;
+		}
+	}
+
+	/**
+	 * Makes sure the note's own folder holds a copy of the PDF, and reports
+	 * whether THIS call was the one that created it.
+	 */
+	async ensurePdfInFolder(pdf: TFile): Promise<boolean> {
+		const folder = this.noteFolderFor(pdf);
+		const from = normalizePath(pdf.path);
+		const target = this.pdfCopyPath(folder, pdf.name);
+		if (!target || target === from) return false;
+		if (this.app.vault.getAbstractFileByPath(target) instanceof TFile) return false;
+		return (await this.copyPdfTo(pdf, folder)) !== from;
 	}
 
 	/* ---------------- read / write ---------------- */
@@ -260,9 +396,13 @@ export class ExcerptStore {
 
 	async save(pdf: TFile, data: ExcerptFileData): Promise<TFile> {
 		const path = this.notePathFor(pdf);
+		const source = this.citePathFor(pdf);
+		// The serializer reads `data.source`, not opts.source — both the
+		// frontmatter and every back-link follow this one value.
+		data.source = source;
 		this.cache.delete(path);
 		const content = serializeExcerptFile(data, {
-			source: pdf.path,
+			source,
 			title: data.title,
 			linkBuilder: this.linkBuilder,
 			tags: data.tags?.length ? data.tags : this.getSettings().tags,
@@ -278,7 +418,7 @@ export class ExcerptStore {
 			file = await this.app.vault.create(path, content);
 		}
 
-		const stored = { ...data, source: pdf.path, updated: Date.now() };
+		const stored = { ...data, source, updated: Date.now() };
 		this.claimed.set(path, pdf.path);
 		this.cache.set(path, { mtime: file.stat.mtime, size: file.stat.size, data: stored });
 		return file;
@@ -289,7 +429,14 @@ export class ExcerptStore {
 	async addSlices(pdf: TFile, slices: PageExcerptSlice[]): Promise<AddResult> {
 		const usable = slices.filter((s) => normalizeExcerptText(s.text).length > 0);
 		if (!usable.length) {
-			return { status: "empty", noteFile: null, noteCreated: false, added: [], duplicates: 0 };
+			return {
+				status: "empty",
+				noteFile: null,
+				noteCreated: false,
+				added: [],
+				duplicates: 0,
+				pdfCopied: false,
+			};
 		}
 
 		const path = this.notePathFor(pdf);
@@ -323,13 +470,15 @@ export class ExcerptStore {
 				noteCreated: false,
 				added: [],
 				duplicates,
+				pdfCopied: false,
 			};
 		}
 
+		const pdfCopied = await this.ensurePdfInFolder(pdf);
 		data.updated = Date.now();
 		if (!data.created) data.created = data.updated;
 		const noteFile = await this.save(pdf, data);
-		return { status: "added", noteFile, noteCreated: !existedBefore, added, duplicates };
+		return { status: "added", noteFile, noteCreated: !existedBefore, added, duplicates, pdfCopied };
 	}
 
 	/**
@@ -357,11 +506,19 @@ export class ExcerptStore {
 			image: imagePath,
 		};
 		data.excerpts.push(excerpt);
+		const pdfCopied = await this.ensurePdfInFolder(pdf);
 		data.updated = Date.now();
 		if (!data.created) data.created = data.updated;
 
 		const noteFile = await this.save(pdf, data);
-		return { status: "added", noteFile, noteCreated: !existedBefore, added: [excerpt], duplicates: 0 };
+		return {
+			status: "added",
+			noteFile,
+			noteCreated: !existedBefore,
+			added: [excerpt],
+			duplicates: 0,
+			pdfCopied,
+		};
 	}
 
 	/** Removes one excerpt and returns it, so the caller can clean up its file. */
@@ -376,14 +533,16 @@ export class ExcerptStore {
 	}
 
 	/**
-	 * Moves notes written by the older flat layout into their per-PDF folder.
-	 * Only notes sitting directly in the excerpt folder are touched.
+	 * Moves notes written by the older flat layout into their per-PDF folder, and
+	 * brings each PDF along so the note cites the copy. Only notes sitting
+	 * directly in the excerpt folder are touched.
 	 */
-	async migrateFlatNotes(): Promise<{ moved: number; skipped: number }> {
+	async migrateFlatNotes(): Promise<{ moved: number; copied: number; skipped: number }> {
 		const folder = this.excerptFolder();
-		if (!folder) return { moved: 0, skipped: 0 };
+		if (!folder) return { moved: 0, copied: 0, skipped: 0 };
 
 		let moved = 0;
+		let copied = 0;
 		let skipped = 0;
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (!file.path.startsWith(`${folder}/`)) continue;
@@ -414,12 +573,37 @@ export class ExcerptStore {
 				this.cache.delete(file.path);
 				this.invalidate(target);
 				moved++;
+
+				// Bring the PDF along, then repoint every back-link at the copy.
+				const pdf = this.app.vault.getAbstractFileByPath(normalizePath(data.source));
+				const pdfFolder = `${folder}/${name}`;
+				const cited =
+					pdf instanceof TFile && pdf.extension === "pdf"
+						? await this.copyPdfTo(pdf, pdfFolder)
+						: await this.copyExternalPdfTo(data.source, pdfFolder);
+				if (cited !== normalizePath(data.source)) {
+					const rewritten = serializeExcerptFile(
+						{ ...data, source: cited },
+						{
+							source: cited,
+							title: data.title,
+							linkBuilder: this.linkBuilder,
+							tags: data.tags?.length ? data.tags : this.getSettings().tags,
+						},
+					);
+					const movedFile = this.app.vault.getAbstractFileByPath(target);
+					if (movedFile instanceof TFile) {
+						await this.app.vault.modify(movedFile, rewritten);
+						this.invalidate(target);
+						copied++;
+					}
+				}
 			} catch (error) {
 				console.error(`[pdf-excerpt] 移动摘录笔记失败：${file.path}`, error);
 				skipped++;
 			}
 		}
-		return { moved, skipped };
+		return { moved, copied, skipped };
 	}
 
 	async updateExcerpt(pdf: TFile, id: string, patch: Partial<Pick<Excerpt, "text" | "page">>): Promise<boolean> {

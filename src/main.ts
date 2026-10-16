@@ -336,10 +336,11 @@ export default class PdfExcerptPlugin extends Plugin {
 	/** Moves notes from the older flat layout into their per-PDF folder. */
 	private async tidyExcerptNotes(): Promise<void> {
 		try {
-			const { moved, skipped } = await this.store.migrateFlatNotes();
-			if (moved) {
+			const { moved, copied, skipped } = await this.store.migrateFlatNotes();
+			if (moved || copied) {
+				const pdfNote = copied ? `，并把 ${copied} 份 PDF 复制进对应文件夹` : "";
 				new Notice(
-					`已把 ${moved} 篇摘录笔记移入各自的子文件夹${skipped ? `，跳过 ${skipped} 篇` : ""}`,
+					`已整理 ${moved} 篇摘录笔记${pdfNote}${skipped ? `，跳过 ${skipped} 篇` : ""}`,
 				);
 			} else {
 				new Notice(skipped ? `没有可整理的笔记（跳过 ${skipped} 篇）` : "没有需要整理的摘录笔记");
@@ -532,7 +533,8 @@ export default class PdfExcerptPlugin extends Plugin {
 
 		const pages = Array.from(new Set(result.added.map((e) => e.page))).join(", ");
 		const skipped = result.duplicates ? `，跳过 ${result.duplicates} 条重复` : "";
-		new Notice(`已加入摘录（第 ${pages} 页，共 ${result.added.length} 条${skipped}）`);
+		const copied = result.pdfCopied ? "；PDF 已复制进摘录文件夹" : "";
+		new Notice(`已加入摘录（第 ${pages} 页，共 ${result.added.length} 条${skipped}）${copied}`);
 
 		this.scheduleRefresh();
 
@@ -631,7 +633,8 @@ export default class PdfExcerptPlugin extends Plugin {
 				this.scheduleRefresh();
 				return;
 			}
-			new Notice(`已把第 ${capture.page} 页的截图加入摘录`);
+			const copied = result.pdfCopied ? "；PDF 已复制进摘录文件夹" : "";
+			new Notice(`已把第 ${capture.page} 页的截图加入摘录${copied}`);
 			this.scheduleRefresh();
 			if (this.settings.openNoteOnFirstExcerpt && result.noteCreated && result.noteFile) {
 				await this.openNoteInMainArea(result.noteFile);
