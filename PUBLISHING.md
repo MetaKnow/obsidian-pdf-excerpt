@@ -14,7 +14,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 源码 + 构建脚本 + 单元测试 | 就绪（17 个单元测试、16 项端到端冒烟检查全部通过）|
+| 源码 + 构建脚本 + 单元测试 | 就绪（22 个单元测试、31 项端到端冒烟检查全部通过）|
 | `manifest.json` / `versions.json` / `styles.css` | 就绪，`author` 已设为 `MetaKnow` |
 | `.github/workflows/release.yml` | 就绪，打 tag 后自动构建并发 Release |
 | `LICENSE`（MIT）/ `README.md` / `CHANGELOG.md` | 就绪 |
@@ -28,8 +28,10 @@
 cd /Users/leckie/002开发项目/obsidianPlugin
 
 npm run build     # 应该无输出并生成 main.js
-npm test          # 应该显示 pass 17 / fail 0
-git log --oneline # 应该能看到首次提交
+npm test          # 应该显示 pass 22 / fail 0
+node tools/smoke/harness.cjs   # 冒烟检查：31/31 checks passed
+                               # （首次运行需先在 tools/smoke 里 `npm i` 装 jsdom）
+git log --oneline # 应该能看到全部提交
 ```
 
 ---
@@ -108,7 +110,7 @@ gh release create 1.0.0 \
 
 - [ ] 标签名是 **`1.0.0`**，和 `manifest.json` 的 `version` 一字不差
 - [ ] 附件里正好有 **`main.js`**、**`manifest.json`**、**`styles.css`** 三个文件
-- [ ] `main.js` 大小约 42 KB（如果只有几百字节，说明构建产物不对）
+- [ ] `main.js` 大小约 62 KB（如果只有几百字节，说明构建产物不对）
 
 还建议用 Obsidian 自己装一遍验证（不用手动拷文件）：
 
