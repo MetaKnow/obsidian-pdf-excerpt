@@ -182,15 +182,13 @@ export class PdfExcerptSidebarView extends ItemView {
 		const actions = head.createDiv({ cls: "pdf-excerpt-card-actions" });
 		const image = isImageExcerpt(excerpt);
 
-		if (!image) {
-			const locate = actions.createEl("button", { cls: "clickable-icon" });
-			setIcon(locate, "crosshair");
-			locate.setAttr("aria-label", "在 PDF 中定位");
-			locate.addEventListener("click", (evt) => {
-				evt.stopPropagation();
-				void this.plugin.locateExcerpt(excerpt);
-			});
-		}
+		const locate = actions.createEl("button", { cls: "clickable-icon" });
+		setIcon(locate, "crosshair");
+		locate.setAttr("aria-label", image ? "跳转到截图所在页面" : "在 PDF 中定位");
+		locate.addEventListener("click", (evt) => {
+			evt.stopPropagation();
+			void this.plugin.locateExcerpt(excerpt);
+		});
 
 		const copy = actions.createEl("button", { cls: "clickable-icon" });
 		setIcon(copy, "copy");
@@ -220,10 +218,10 @@ export class PdfExcerptSidebarView extends ItemView {
 			body.setText(excerpt.text);
 		}
 
-		card.addEventListener("click", () => {
-			if (image) void this.plugin.openExcerptNote(this.pdf as TFile);
-			else void this.plugin.locateExcerpt(excerpt);
-		});
+		// Clicking a card always reveals the excerpt inside the PDF — including
+		// screenshots, which jump to the page they were taken from. The note is
+		// opened from the title-bar button instead.
+		card.addEventListener("click", () => void this.plugin.locateExcerpt(excerpt));
 		return card;
 	}
 

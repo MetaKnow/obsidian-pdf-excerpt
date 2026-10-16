@@ -148,6 +148,15 @@ function installDomEnvironment() {
 	globalThis.createDiv = (info, cb) => document.body.createDiv(info, cb);
 	globalThis.createSpan = (info, cb) => document.body.createSpan(info, cb);
 
+	// jsdom ships no `CSS` object, but the highlight layer escapes excerpt ids
+	// with `CSS.escape` (a real browser has it).
+	if (!window.CSS) {
+		window.CSS = {
+			escape: (value) => String(value).replace(/[^a-zA-Z0-9_\u00a0-\uffff-]/g, (ch) => `\\${ch}`),
+		};
+	}
+	globalThis.CSS = window.CSS;
+
 	// The highlight layer schedules work on animation frames.
 	if (!window.requestAnimationFrame) {
 		window.requestAnimationFrame = (cb) => window.setTimeout(() => cb(Date.now()), 16);

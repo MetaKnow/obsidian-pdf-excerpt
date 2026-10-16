@@ -105,6 +105,12 @@ window.HTMLCanvasElement.prototype.toBlob = function toBlob(callback) {
 	callback(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: "image/png" }));
 };
 
+// jsdom implements no scrolling; record what the plugin asked to reveal.
+const scrollCalls = [];
+Element.prototype.scrollIntoView = function scrollIntoView(options) {
+	scrollCalls.push({ el: this, options });
+};
+
 const obsidianStub = require("./obsidian-stub.cjs");
 // Stands in for Electron's native save dialog. The plugin reaches it through
 // `require("electron").remote.dialog`, so intercept that request.
@@ -684,6 +690,35 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		const note = app.vault.files.get("摘录知识库/Attention Is Full.md");
 		assert.match(note._content, /截图 · 第 1 页/, "labelled as a screenshot");
 		assert.match(note._content, new RegExp(`!\\[\\[${imagePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "image embed");
+	});
+
+	await check("clicking a screenshot card jumps to its page instead of opening the note", async () => {
+		app.workspace.activeFile = pdf;
+		const leaf = app.workspace.getRightLeaf(false);
+		const view = plugin.views[0].factory(leaf);
+		await view.onOpen();
+
+		const card = view.contentEl.querySelector(".pdf-excerpt-card.is-image");
+		assert.ok(card, "the screenshot card is rendered in the panel");
+		assert.ok(
+			card.querySelector('button[aria-label="跳转到截图所在页面"]'),
+			"screenshot cards get a locate button",
+		);
+
+		scrollCalls.length = 0;
+		card.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+		await tick();
+
+		assert.equal(
+			app.workspace.activeFile.path,
+			pdf.path,
+			"clicking did not open the excerpt note",
+		);
+		assert.ok(
+			scrollCalls.some((call) => call.el === parts.page),
+			"the screenshot's PDF page was scrolled into view",
+		);
+		assert.ok(parts.page.classList.contains("is-page-flashing"), "the page is flashed as a cue");
 	});
 
 	await check("the screenshot button sits left of the open-note button", async () => {

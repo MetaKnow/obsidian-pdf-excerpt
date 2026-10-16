@@ -235,3 +235,15 @@
 	border: 1px solid var(--interactive-accent);
 	background-color: rgba(var(--interactive-accent-rgb), 0.18);
 }
+
+/* Screenshots have no highlight of their own, so the page frame is the cue. */
+.pdfViewer .page.is-page-flashing {
+	box-shadow: inset 0 0 0 3px var(--interactive-accent);
+	border-radius: var(--radius-s);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.pdfViewer .page.is-page-flashing {
+		box-shadow: inset 0 0 0 1px var(--interactive-accent);
+	}
+}

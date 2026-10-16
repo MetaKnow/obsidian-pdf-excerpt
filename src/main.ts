@@ -532,11 +532,17 @@ export default class PdfExcerptPlugin extends Plugin {
 	}
 
 	async locateExcerpt(excerpt: Excerpt): Promise<void> {
-		for (const [host, entry] of this.layers) {
-			if (!host.isConnected) continue;
+		const file = this.getActivePdfFile();
+		const layers = [...this.layers.entries()].filter(([host]) => host.isConnected);
+		// Prefer the document the panel is showing, so locating never jumps a
+		// different PDF that happens to have a page with the same number.
+		const ordered = [
+			...layers.filter(([, entry]) => entry.file && file && entry.file.path === file.path),
+			...layers.filter(([, entry]) => !(entry.file && file && entry.file.path === file.path)),
+		];
+		for (const [, entry] of ordered) {
 			if (await entry.layer.scrollTo(excerpt, true)) return;
 		}
-		const file = this.getActivePdfFile();
 		if (file) new Notice("没有找到这条摘录对应的 PDF 页面，请先打开该 PDF。");
 	}
 

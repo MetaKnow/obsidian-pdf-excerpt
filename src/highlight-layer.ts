@@ -14,6 +14,7 @@ import { alignOverlayToCanvas, isPageRendered, pageNumberOf } from "./pdf-view";
 const LAYER_CLASS = "pdf-excerpt-layer";
 const HL_CLASS = "pdf-excerpt-hl";
 const FLASH_CLASS = "is-flashing";
+const PAGE_FLASH_CLASS = "is-page-flashing";
 
 export interface HighlightLayerOptions {
 	color: string;
@@ -205,11 +206,25 @@ export class PdfHighlightLayer {
 			this.render();
 		}
 
-		const target =
-			pageEl.querySelector<HTMLElement>(`.${HL_CLASS}[data-excerpt-id="${CSS.escape(excerpt.id)}"]`) ?? pageEl;
-		target.scrollIntoView({ block: "center", behavior: "smooth" });
-		if (flash) this.flash(pageEl, excerpt.id);
+		const node = pageEl.querySelector<HTMLElement>(
+			`.${HL_CLASS}[data-excerpt-id="${CSS.escape(excerpt.id)}"]`,
+		);
+		// A screenshot excerpt has no rectangles, so there is nothing inside the
+		// page to scroll to; centring the page and flashing its frame is the cue.
+		(node ?? pageEl).scrollIntoView({ block: "center", behavior: "smooth" });
+		if (!flash) return true;
+		if (node) this.flash(pageEl, excerpt.id);
+		else this.flashPage(pageEl);
 		return true;
+	}
+
+	/** Page-level cue for excerpts that have no rectangle of their own. */
+	flashPage(pageEl: HTMLElement): void {
+		pageEl.classList.remove(PAGE_FLASH_CLASS);
+		// Force a reflow so the animation restarts on repeated flashes.
+		void pageEl.offsetWidth;
+		pageEl.classList.add(PAGE_FLASH_CLASS);
+		window.setTimeout(() => pageEl.classList.remove(PAGE_FLASH_CLASS), 900);
 	}
 
 	flash(pageEl: HTMLElement, excerptId: string): void {
