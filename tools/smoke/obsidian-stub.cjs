@@ -128,6 +128,17 @@ class Vault extends Emitter {
 		return file;
 	}
 
+	async readBinary(file) {
+		if (!this.files.has(file.path)) throw new Error(`ENOENT: ${file.path}`);
+		return file.binary ?? Buffer.from(file._content, "utf8");
+	}
+
+	async modifyBinary(file, data) {
+		file.binary = data;
+		file.stat = { ...file.stat, mtime: file.stat.mtime + 1, size: data.byteLength ?? 0 };
+		this.trigger("modify", file);
+	}
+
 	getResourcePath(file) {
 		return `app://local/${encodeURIComponent(file.path)}`;
 	}
@@ -282,6 +293,10 @@ class Workspace extends Emitter {
 class DataAdapter {
 	constructor() {
 		this.files = new Map();
+		this.basePath = "";
+	}
+	getBasePath() {
+		return this.basePath;
 	}
 	async exists(path) {
 		return this.files.has(normalizePath(path));

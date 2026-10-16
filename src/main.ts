@@ -67,12 +67,22 @@ interface SaveFilter {
 	extensions: string[];
 }
 
+interface OpenDialogResult {
+	canceled: boolean;
+	filePaths?: string[];
+}
+
 interface SaveDialogLike {
 	showSaveDialog(options: {
 		title?: string;
 		defaultPath?: string;
 		filters?: SaveFilter[];
 	}): Promise<SaveDialogResult>;
+	showOpenDialog?(options: {
+		title?: string;
+		defaultPath?: string;
+		properties?: string[];
+	}): Promise<OpenDialogResult>;
 }
 
 /**
@@ -80,7 +90,7 @@ interface SaveDialogLike {
  * available. `electron.remote` was removed in Electron 14, so fall back to
  * `@electron/remote` — the same pair Obsidian itself uses.
  */
-function electronSaveDialog(): SaveDialogLike | null {
+function electronDialog(): SaveDialogLike | null {
 	if (typeof require !== "function") return null;
 	try {
 		const electron = require("electron") as { remote?: { dialog?: SaveDialogLike } } | undefined;
@@ -104,6 +114,16 @@ function nodeFs(): typeof import("fs") | null {
 		return require("fs") as typeof import("fs");
 	} catch (error) {
 		console.warn("[pdf-excerpt] require('fs') 不可用", error);
+		return null;
+	}
+}
+
+function nodePath(): typeof import("path") | null {
+	if (typeof require !== "function") return null;
+	try {
+		return require("path") as typeof import("path");
+	} catch (error) {
+		console.warn("[pdf-excerpt] require('path') 不可用", error);
 		return null;
 	}
 }
@@ -722,30 +742,89 @@ export default class PdfExcerptPlugin extends Plugin {
 		}
 	}
 
-	/** Exports the open PDF's own excerpt note, wherever the user wants it. */
+	/**
+	 * Exports the PDF's whole excerpt folder — the note and every screenshot —
+	 * so the images keep resolving outside the vault.
+	 */
 	async exportCurrentNote(): Promise<void> {
 		const file = this.getActivePdfFile();
 		if (!file) {
 			new Notice("请先打开一个 PDF。");
 			return;
 		}
-		const note = this.store.getNoteFile(file);
-		if (!note) {
+		const folder = this.store.noteFolderFor(file);
+		if (!folder || !this.app.vault.getAbstractFileByPath(folder)) {
 			new Notice("这个 PDF 还没有摘录笔记。");
 			return;
 		}
 		try {
-			const content = await this.app.vault.cachedRead(note);
-			const saved = await this.saveTextToDisk({
-				defaultName: `${note.basename}.md`,
-				content,
-				filters: [{ name: "Markdown", extensions: ["md"] }],
-			});
-			if (saved) new Notice(`已导出摘录文件 → ${saved}`);
+			const saved = await this.copyFolderToDisk(folder);
+			if (saved) new Notice(`已导出摘录文件夹 → ${saved}`);
 		} catch (err) {
-			console.error("[pdf-excerpt] 导出摘录文件失败", err);
-			new Notice("导出摘录文件失败，请查看控制台。");
+			console.error("[pdf-excerpt] 导出摘录文件夹失败", err);
+			new Notice("导出摘录文件夹失败，请查看控制台。");
 		}
+	}
+
+	/**
+	 * Copies a vault folder out to a location the user picks in the OS dialog.
+	 * Returns the exported folder path, or null when the user cancels.
+	 */
+	private async copyFolderToDisk(folder: string): Promise<string | null> {
+		const name = folder.split("/").filter(Boolean).pop() ?? folder;
+		const dialog = electronDialog();
+		const fs = nodeFs();
+		const source = this.absoluteVaultPath(folder);
+
+		if (!dialog?.showOpenDialog || !fs || !source) {
+			console.warn("[pdf-excerpt] 系统对话框不可用，导出到仓库的导出文件夹");
+			return this.copyFolderIntoVault(folder, name);
+		}
+
+		const result = await dialog.showOpenDialog({
+			title: `选择导出位置（会在其中新建「${name}」文件夹）`,
+			properties: ["openDirectory", "createDirectory"],
+		});
+		if (result.canceled || !result.filePaths?.length) return null;
+
+		const path = nodePath();
+		const destination = path
+			? path.join(result.filePaths[0], name)
+			: `${result.filePaths[0].replace(/\/+$/, "")}/${name}`;
+		await fs.promises.cp(source, destination, { recursive: true });
+		return destination;
+	}
+
+	/** Absolute path of a vault-relative folder, or null when it cannot be known. */
+	private absoluteVaultPath(relative: string): string | null {
+		const adapter = this.app.vault.adapter as { getBasePath?: () => string };
+		try {
+			const base = adapter.getBasePath?.();
+			if (!base) return null;
+			const path = nodePath();
+			return path ? path.join(base, ...relative.split("/")) : `${base}/${relative}`;
+		} catch (error) {
+			console.warn("[pdf-excerpt] 无法取得仓库的绝对路径", error);
+			return null;
+		}
+	}
+
+	/** Degraded export: mirrors the folder inside the vault's export folder. */
+	private async copyFolderIntoVault(folder: string, name: string): Promise<string> {
+		const base = this.settings.exportFolder.trim().replace(/\/+$/, "") || this.settings.exportFolder.trim();
+		const target = normalizePath(`${base}/${name}`);
+		await ensureVaultFolder(this.app, target);
+
+		for (const entry of this.app.vault.getFiles()) {
+			if (!entry.path.startsWith(`${folder}/`)) continue;
+			const out = normalizePath(`${target}/${entry.path.slice(folder.length + 1)}`);
+			await ensureVaultFolder(this.app, out.split("/").slice(0, -1).join("/"));
+			const data = await this.app.vault.readBinary(entry);
+			const existing = this.app.vault.getAbstractFileByPath(out);
+			if (existing instanceof TFile) await this.app.vault.modifyBinary(existing, data);
+			else await this.app.vault.createBinary(out, data);
+		}
+		return target;
 	}
 
 	/**
@@ -758,7 +837,7 @@ export default class PdfExcerptPlugin extends Plugin {
 		content: string;
 		filters?: SaveFilter[];
 	}): Promise<string | null> {
-		const dialog = electronSaveDialog();
+		const dialog = electronDialog();
 		if (dialog) {
 			try {
 				const result = await dialog.showSaveDialog({

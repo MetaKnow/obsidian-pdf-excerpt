@@ -108,7 +108,7 @@ export class PdfExcerptSidebarView extends ItemView {
 
 		const exportBtn = actions.createEl("button", { cls: "clickable-icon" });
 		setIcon(exportBtn, "download");
-		exportBtn.setAttr("aria-label", "导出摘录文件（自己选择保存位置）");
+		exportBtn.setAttr("aria-label", "导出整个摘录文件夹（自己选择保存位置）");
 		exportBtn.addEventListener("click", () => void this.plugin.exportCurrentNote());
 
 		const refreshBtn = actions.createEl("button", { cls: "clickable-icon" });

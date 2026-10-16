@@ -116,18 +116,28 @@ const obsidianStub = require("./obsidian-stub.cjs");
 // `require("electron").remote.dialog`, so intercept that request.
 const fakeSaveDialog = {
 	calls: [],
+	openCalls: [],
 	/** @type {{canceled: boolean, filePath?: string}} */
 	next: { canceled: true },
+	/** @type {{canceled: boolean, filePaths: string[]}} */
+	nextOpen: { canceled: true, filePaths: [] },
 	async showSaveDialog(options) {
 		this.calls.push(options);
 		return this.next;
 	},
+	async showOpenDialog(options) {
+		this.openCalls.push(options);
+		return this.nextOpen;
+	},
 };
-const fakeElectron = { remote: { dialog: fakeSaveDialog } };
+const fakeElectron = { remote: { dialog: fakeSaveDialog }, disabled: false };
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
 	if (request === "obsidian") return obsidianStub;
+	if (fakeElectron.disabled) {
+		if (request === "electron" || request === "@electron/remote") return {};
+	}
 	if (request === "electron") return fakeElectron;
 	if (request === "@electron/remote") return fakeElectron.remote;
 	return originalLoad.call(this, request, parent, isMain);
@@ -616,20 +626,68 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		);
 	});
 
-	await check("exporting asks the OS where to save, and never opens the file", async () => {
+	await check("the panel export ships the PDF's whole folder where the user picks", async () => {
+		const fs = require("node:fs");
+		const os = require("node:os");
 		const before = app.workspace.leaves.length;
-		fakeSaveDialog.calls.length = 0;
-		fakeSaveDialog.next = { canceled: true };
+		const folder = plugin.store.noteFolderFor(pdf);
+		assert.equal(folder, "摘录知识库/Attention Is Full", "the PDF's own folder");
 
-		app.workspace.activeFile = pdf;
-		await plugin.exportCurrentNote();
-		assert.equal(fakeSaveDialog.calls.length, 1, "the save dialog was used");
-		assert.match(fakeSaveDialog.calls[0].defaultPath, /Attention Is Full\.md$/, "default file name");
-		assert.equal(app.workspace.leaves.length, before, "cancelling opens nothing");
+		// The plugin copies with fs, so the fake vault needs real files behind it.
+		const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-excerpt-vault-"));
+		const source = path.join(vaultRoot, "摘录知识库", "Attention Is Full");
+		fs.mkdirSync(source, { recursive: true });
+		fs.writeFileSync(path.join(source, "Attention Is Full.md"), "# 摘录\n");
+		fs.writeFileSync(path.join(source, "shot.png"), Buffer.from([137, 80, 78, 71]));
+		app.vault.adapter.basePath = vaultRoot;
 
-		fakeSaveDialog.next = { canceled: false, filePath: "/tmp/out.md" };
-		await plugin.exportCurrentNote();
-		assert.equal(app.workspace.leaves.length, before, "a successful export opens nothing");
+		const out = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-excerpt-out-"));
+		try {
+			fakeSaveDialog.openCalls.length = 0;
+			fakeSaveDialog.nextOpen = { canceled: true, filePaths: [] };
+			app.workspace.activeFile = pdf;
+			await plugin.exportCurrentNote();
+
+			assert.equal(fakeSaveDialog.openCalls.length, 1, "the OS folder picker was used");
+			assert.deepEqual(
+				fakeSaveDialog.openCalls[0].properties,
+				["openDirectory", "createDirectory"],
+				"it asks for a folder, not a file",
+			);
+			assert.equal(app.workspace.leaves.length, before, "cancelling opens nothing");
+			assert.ok(!fs.existsSync(path.join(out, "Attention Is Full")), "cancelling writes nothing");
+
+			fakeSaveDialog.nextOpen = { canceled: false, filePaths: [out] };
+			await plugin.exportCurrentNote();
+
+			const exported = path.join(out, "Attention Is Full");
+			assert.equal(
+				fs.readFileSync(path.join(exported, "Attention Is Full.md"), "utf8"),
+				"# 摘录\n",
+				"the note came along",
+			);
+			assert.equal(fs.readFileSync(path.join(exported, "shot.png")).length, 4, "the screenshot came along");
+			assert.equal(app.workspace.leaves.length, before, "exporting opens nothing");
+		} finally {
+			fs.rmSync(vaultRoot, { recursive: true, force: true });
+			fs.rmSync(out, { recursive: true, force: true });
+			fakeSaveDialog.nextOpen = { canceled: true, filePaths: [] };
+		}
+	});
+
+	await check("folder export falls back to the vault when no OS dialog exists", async () => {
+		fakeElectron.disabled = true;
+		try {
+			app.workspace.activeFile = pdf;
+			await plugin.exportCurrentNote();
+
+			assert.ok(
+				app.vault.files.has("摘录知识库/导出/Attention Is Full/Attention Is Full.md"),
+				"the note was mirrored inside the vault",
+			);
+		} finally {
+			fakeElectron.disabled = false;
+		}
 	});
 
 	await check("a screenshot excerpt lands in the note with no geometry", async () => {
@@ -777,7 +835,7 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		assert.ok(shot >= 0, `screenshot button present; labels: ${labels.join(" / ")}`);
 		assert.ok(open > shot, "the screenshot button comes first");
 		assert.ok(
-			labels.includes("导出摘录文件（自己选择保存位置）"),
+			labels.includes("导出整个摘录文件夹（自己选择保存位置）"),
 			"export no longer promises a fixed path",
 		);
 	});
