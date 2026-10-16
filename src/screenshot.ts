@@ -28,12 +28,37 @@ interface ActiveDrag {
 	pageEl: HTMLElement;
 	overlay: HTMLElement;
 	canvas: HTMLCanvasElement;
-	scaleX: number;
-	scaleY: number;
 }
 
 function pageCanvas(pageEl: HTMLElement): HTMLCanvasElement | null {
 	return pageEl.querySelector<HTMLCanvasElement>("canvas");
+}
+
+/**
+ * Pointer position in overlay-local CSS pixels, clamped to the overlay box.
+ * Deliberately takes the overlay as an argument: the pointerdown handler needs a
+ * point BEFORE the drag state exists.
+ */
+function localPoint(evt: PointerEvent, overlay: HTMLElement): { x: number; y: number } {
+	const rect = overlay.getBoundingClientRect();
+	const width = rect.width || overlay.clientWidth;
+	const height = rect.height || overlay.clientHeight;
+	return {
+		x: Math.min(Math.max(0, evt.clientX - rect.left), width),
+		y: Math.min(Math.max(0, evt.clientY - rect.top), height),
+	};
+}
+
+/**
+ * CSS pixels -> canvas backing-store pixels. pdf.js renders the canvas at
+ * `viewport.width * outputScale`, so this is the device pixel ratio (and any
+ * extra resolution the viewer chose), which is what makes the crop sharp.
+ */
+function cropScale(canvas: HTMLCanvasElement, overlay: HTMLElement): { x: number; y: number } {
+	return {
+		x: canvas.width / Math.max(1, overlay.clientWidth),
+		y: canvas.height / Math.max(1, overlay.clientHeight),
+	};
 }
 
 /**
@@ -61,7 +86,14 @@ export function startScreenshot(
 		let startY = 0;
 		let settled = false;
 
+		const detachDrag = () => {
+			doc.removeEventListener("pointermove", onPointerMove, true);
+			doc.removeEventListener("pointerup", onPointerUp, true);
+			doc.removeEventListener("pointercancel", onPointerCancel, true);
+		};
+
 		const cleanup = () => {
+			detachDrag();
 			doc.removeEventListener("keydown", onKey, true);
 			for (const overlay of overlays) overlay.remove();
 			overlays.length = 0;
@@ -82,38 +114,32 @@ export function startScreenshot(
 			finish(null);
 		};
 
-		const bounds = (evt: PointerEvent) => {
-			if (!drag) return null;
-			const rect = drag.overlay.getBoundingClientRect();
-			return {
-				x: Math.min(Math.max(0, evt.clientX - rect.left), rect.width),
-				y: Math.min(Math.max(0, evt.clientY - rect.top), rect.height),
-			};
+		const onPointerCancel = () => {
+			onHint?.("已取消截图。");
+			finish(null);
 		};
 
 		const onPointerMove = (evt: PointerEvent) => {
-			const point = bounds(evt);
-			if (!point || !box) return;
+			if (!drag || !box) return;
 			evt.preventDefault();
+			const point = localPoint(evt, drag.overlay);
 			const x = Math.min(startX, point.x);
 			const y = Math.min(startY, point.y);
-			const w = Math.abs(point.x - startX);
-			const h = Math.abs(point.y - startY);
 			box.style.left = `${x}px`;
 			box.style.top = `${y}px`;
-			box.style.width = `${w}px`;
-			box.style.height = `${h}px`;
+			box.style.width = `${Math.abs(point.x - startX)}px`;
+			box.style.height = `${Math.abs(point.y - startY)}px`;
 		};
 
 		const onPointerUp = (evt: PointerEvent) => {
-			const point = bounds(evt);
 			const current = drag;
-			if (!point || !current) {
+			if (!current) {
 				finish(null);
 				return;
 			}
 			evt.preventDefault();
 
+			const point = localPoint(evt, current.overlay);
 			const x = Math.min(startX, point.x);
 			const y = Math.min(startY, point.y);
 			const w = Math.abs(point.x - startX);
@@ -125,13 +151,13 @@ export function startScreenshot(
 			}
 
 			const canvas = current.canvas;
-			const scaleX = canvas.width / Math.max(1, current.overlay.clientWidth);
-			const scaleY = canvas.height / Math.max(1, current.overlay.clientHeight);
-			const sx = Math.max(0, Math.round(x * scaleX));
-			const sy = Math.max(0, Math.round(y * scaleY));
-			const sw = Math.min(canvas.width - sx, Math.max(1, Math.round(w * scaleX)));
-			const sh = Math.min(canvas.height - sy, Math.max(1, Math.round(h * scaleY)));
+			const scale = cropScale(canvas, current.overlay);
+			const sx = Math.min(Math.max(0, Math.round(x * scale.x)), Math.max(0, canvas.width - 1));
+			const sy = Math.min(Math.max(0, Math.round(y * scale.y)), Math.max(0, canvas.height - 1));
+			const sw = Math.max(1, Math.min(canvas.width - sx, Math.round(w * scale.x)));
+			const sh = Math.max(1, Math.min(canvas.height - sy, Math.round(h * scale.y)));
 			if (sw < 1 || sh < 1) {
+				onHint?.("截图区域太小，已取消。");
 				finish(null);
 				return;
 			}
@@ -148,10 +174,11 @@ export function startScreenshot(
 			ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
 
 			const page = pageNumberOf(current.pageEl) ?? 1;
-			// Hide the rubber band before the browser paints, so it is never
-			// baked into the crop.
+			// Drop the rubber band before the crop is finalised so it can never
+			// end up inside the image.
 			box?.remove();
 			box = null;
+
 			out.toBlob((blob) => {
 				if (!blob) {
 					finish(null);
@@ -166,25 +193,23 @@ export function startScreenshot(
 
 		const onPointerDown = (evt: PointerEvent) => {
 			if (drag || evt.button !== 0) return;
-			const pageEl = (evt.currentTarget as HTMLElement | null)?.closest<HTMLElement>(".page");
-			if (!pageEl) return;
+			const overlay = evt.currentTarget as HTMLElement | null;
+			if (!overlay) return;
+			const pageEl = overlay.parentElement;
+			if (!pageEl || !pageEl.classList.contains("page")) return;
 			const canvas = pageCanvas(pageEl);
-			const overlay = overlays.find((o) => o.parentElement === pageEl);
-			if (!canvas || !overlay) return;
-			const point = bounds(evt);
-			if (!point) return;
+			if (!canvas) return;
 
 			evt.preventDefault();
 			evt.stopPropagation();
-			drag = {
-				pageEl,
-				overlay,
-				canvas,
-				scaleX: canvas.width / Math.max(1, overlay.clientWidth),
-				scaleY: canvas.height / Math.max(1, overlay.clientHeight),
-			};
+
+			// Set the drag state BEFORE reading the point: the helpers below are
+			// written to work off the live drag.
+			drag = { pageEl, overlay, canvas };
+			const point = localPoint(evt, overlay);
 			startX = point.x;
 			startY = point.y;
+
 			box = doc.createElement("div");
 			box.className = SHOT_BOX_CLASS;
 			box.style.left = `${startX}px`;
@@ -192,6 +217,12 @@ export function startScreenshot(
 			box.style.width = "0px";
 			box.style.height = "0px";
 			overlay.appendChild(box);
+
+			// Track on the document, not the overlay, so a drag that leaves the
+			// page still updates and still ends cleanly.
+			doc.addEventListener("pointermove", onPointerMove, true);
+			doc.addEventListener("pointerup", onPointerUp, true);
+			doc.addEventListener("pointercancel", onPointerCancel, true);
 		};
 
 		for (const pageEl of pages) {
@@ -205,8 +236,6 @@ export function startScreenshot(
 				continue;
 			}
 			overlay.addEventListener("pointerdown", onPointerDown);
-			overlay.addEventListener("pointermove", onPointerMove);
-			overlay.addEventListener("pointerup", onPointerUp);
 			overlays.push(overlay);
 		}
 

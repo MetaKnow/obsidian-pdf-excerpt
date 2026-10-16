@@ -62,7 +62,7 @@ function px(value) {
 
 Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
 	if (this.classList?.contains("page")) return box(PAGE_BOX.left, PAGE_BOX.top, PAGE_BOX.width, PAGE_BOX.height);
-	if (this.classList?.contains("pdf-excerpt-layer")) {
+	if (this.classList?.contains("pdf-excerpt-layer") || this.classList?.contains("pdf-excerpt-shot")) {
 		// Absolutely positioned inside `.page`: `left:0` lands on the padding box.
 		return box(CANVAS.left + px(this.style.left), CANVAS.top + px(this.style.top), px(this.style.width), px(this.style.height));
 	}
@@ -76,6 +76,33 @@ window.Range.prototype.getClientRects = function getClientRects() {
 };
 window.Range.prototype.getBoundingClientRect = function getBoundingClientRect() {
 	return { ...currentRects[0], right: 304, bottom: 224, x: 96, y: 208 };
+};
+
+// jsdom computes no layout, so clientWidth/clientHeight would be 0. The
+// screenshot code scales CSS pixels to canvas pixels through them.
+for (const prop of ["clientWidth", "clientHeight"]) {
+	Object.defineProperty(Element.prototype, prop, {
+		configurable: true,
+		get() {
+			return Math.round(this.getBoundingClientRect()[prop === "clientWidth" ? "width" : "height"]);
+		},
+	});
+}
+
+// jsdom implements neither canvas rasterisation nor PNG encoding. Record what
+// would have been drawn and hand back a fake PNG blob.
+const drawCalls = [];
+window.HTMLCanvasElement.prototype.getContext = function getContext(type) {
+	if (type !== "2d") return null;
+	return {
+		canvas: this,
+		drawImage(...args) {
+			drawCalls.push(args);
+		},
+	};
+};
+window.HTMLCanvasElement.prototype.toBlob = function toBlob(callback) {
+	callback(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: "image/png" }));
 };
 
 const obsidianStub = require("./obsidian-stub.cjs");
@@ -596,6 +623,67 @@ const META_RE = /^%% pdf-excerpt (\{.*\}) %%$/gm;
 		const shot = excerpts.find((e) => e.image);
 		assert.ok(shot, "the sidebar can see it");
 		assert.equal(plugin.imageUrlFor(shot), `app://local/${encodeURIComponent(imagePath)}`);
+	});
+
+	await check("dragging a box over the page crops that page's canvas into the note", async () => {
+		const pageEl = parts.page;
+		const canvas = parts.canvas;
+		// Simulate a 2x backing store, as pdf.js uses for a crisp render.
+		canvas.width = CANVAS.width * 2;
+		canvas.height = CANVAS.height * 2;
+		drawCalls.length = 0;
+
+		const pending = plugin.captureScreenshot();
+		const overlay = pageEl.querySelector(":scope > .pdf-excerpt-shot");
+		assert.ok(overlay, "a capture overlay is installed on the rendered page");
+		assert.equal(overlay.style.left, "0px", "overlay aligned to the canvas box");
+		assert.equal(overlay.style.width, `${CANVAS.width}px`, "overlay covers the canvas");
+
+		const pointer = (type, x, y, target) =>
+			target.dispatchEvent(
+				new window.MouseEvent(type, {
+					bubbles: true,
+					cancelable: true,
+					button: 0,
+					clientX: CANVAS.left + x,
+					clientY: CANVAS.top + y,
+				}),
+			);
+
+		const down = new window.MouseEvent("pointerdown", {
+			bubbles: true,
+			cancelable: true,
+			button: 0,
+			clientX: CANVAS.left + 100,
+			clientY: CANVAS.top + 200,
+		});
+		overlay.dispatchEvent(down);
+		assert.equal(down.defaultPrevented, true, "the drag takes the pointer over");
+
+		const band = overlay.querySelector(".pdf-excerpt-shot-box");
+		assert.ok(band, "a rubber band appears on pointerdown");
+
+		pointer("pointermove", 300, 260, document);
+		assert.equal(Math.round(Number.parseFloat(band.style.width)), 200, "band width follows the drag");
+		assert.equal(Math.round(Number.parseFloat(band.style.height)), 60, "band height follows the drag");
+
+		// Release outside the page: the drag must still complete.
+		pointer("pointerup", 300, 260, document);
+		await pending;
+		await tick();
+
+		assert.equal(drawCalls.length, 1, "the crop was taken from the page canvas");
+		const [source, sx, sy, sw, sh] = drawCalls[0];
+		assert.equal(source, canvas, "cropped the page's own canvas");
+		assert.deepEqual([sx, sy, sw, sh], [200, 400, 400, 120], "2x device pixels, correct region");
+		assert.equal(pageEl.querySelector(".pdf-excerpt-shot"), null, "overlay cleaned up");
+		assert.equal(pageEl.querySelector(".pdf-excerpt-shot-box"), null, "rubber band cleaned up");
+
+		const imagePath = [...app.vault.files.keys()].find((path) => path.endsWith(".png"));
+		assert.ok(imagePath, `a png was written; files: ${[...app.vault.files.keys()].join(", ")}`);
+		const note = app.vault.files.get("摘录知识库/Attention Is Full.md");
+		assert.match(note._content, /截图 · 第 1 页/, "labelled as a screenshot");
+		assert.match(note._content, new RegExp(`!\\[\\[${imagePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "image embed");
 	});
 
 	await check("the screenshot button sits left of the open-note button", async () => {
