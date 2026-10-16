@@ -268,14 +268,14 @@ function noticeMatching(re) {
 		assert.equal(evt.defaultPrevented, false, "event untouched");
 	});
 
-	await check("the excerpt lands in 摘录知识库/<pdf>.md with geometry + back-link", async () => {
+	await check("the excerpt lands flat in 摘录知识库/<pdf>.md with geometry + back-link", async () => {
 		setLineRects(LINE_RECTS);
 		selectRange(parts.span1, 4, parts.span2, 9);
 		rightClick(parts.span2);
 		await menuItem("加入摘录").callback();
 		await tick();
 
-		const notePath = "摘录知识库/papers/Attention Is Full.md";
+		const notePath = "摘录知识库/Attention Is Full.md";
 		const note = app.vault.files.get(notePath);
 		assert.ok(note, `note exists; files: ${[...app.vault.files.keys()].join(", ")}`);
 
@@ -306,6 +306,23 @@ function noticeMatching(re) {
 		assert.equal(await plugin.store.excerptsFor(pdf).then((e) => e.length), 1);
 	});
 
+	await check("two same-named PDFs get separate notes with no subfolder", async () => {
+		await app.vault.createFolder("archive");
+		const other = await app.vault.create("archive/Attention Is Full.pdf", "%PDF-1.4 fake");
+
+		const mine = plugin.store.notePathFor(pdf);
+		const theirs = plugin.store.notePathFor(other);
+
+		assert.equal(mine, "摘录知识库/Attention Is Full.md");
+		assert.notEqual(theirs, mine, "the clash must not reuse the first PDF's note");
+		assert.ok(!/^摘录知识库\/.+\//.test(theirs), `no subfolder expected, got ${theirs}`);
+		assert.ok(theirs.startsWith("摘录知识库/Attention Is Full ("), `got ${theirs}`);
+
+		// The mapping must not depend on call order.
+		assert.equal(plugin.store.notePathFor(other), theirs, "clashing PDF keeps its path");
+		assert.equal(plugin.store.notePathFor(pdf), mine, "original PDF keeps its path");
+	});
+
 	await check("excerpting the same passage again is refused as a duplicate", async () => {
 		obsidianStub.reset();
 		setLineRects(LINE_RECTS);
@@ -317,7 +334,7 @@ function noticeMatching(re) {
 		assert.ok(noticeMatching(/已经摘录过/), `notices: ${obsidianStub.Notice.instances.map((n) => n.message).join(" | ")}`);
 		assert.equal((await plugin.store.excerptsFor(pdf)).length, 1, "still exactly one excerpt");
 		assert.equal(
-			app.vault.files.get("摘录知识库/papers/Attention Is Full.md")._content.match(/<!-- pdf-excerpt /g).length,
+			app.vault.files.get("摘录知识库/Attention Is Full.md")._content.match(/<!-- pdf-excerpt /g).length,
 			1,
 		);
 	});
@@ -382,7 +399,7 @@ function noticeMatching(re) {
 	/* ---- export ----------------------------------------------------- */
 
 	await check("导出全部 PDF 摘录为 CSV writes a real file", async () => {
-		app.metadataCache.frontmatter.set("摘录知识库/papers/Attention Is Full.md", {
+		app.metadataCache.frontmatter.set("摘录知识库/Attention Is Full.md", {
 			type: "pdf-excerpt",
 			source: "papers/Attention Is Full.pdf",
 		});
@@ -401,7 +418,7 @@ function noticeMatching(re) {
 		await plugin.openExcerptNote(pdf);
 		assert.equal(
 			app.workspace.activeFile.path,
-			"摘录知识库/papers/Attention Is Full.md",
+			"摘录知识库/Attention Is Full.md",
 			"the note was revealed in the right sidebar",
 		);
 	});

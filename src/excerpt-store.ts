@@ -1,8 +1,10 @@
 /**
  * Persistence layer: one markdown note per PDF.
  *
- * The note lives at `<excerptFolder>/<pdf path without extension>.md`, so the
- * mapping is deterministic and two PDFs sharing a basename never collide.
+ * All notes live directly in `<excerptFolder>` (no subfolders), named after the
+ * PDF's basename. When two PDFs share a basename the note is disambiguated with
+ * the PDF's own parent folder name, then with a short path hash, so the mapping
+ * stays deterministic and collision-free without nesting directories.
  */
 
 import { App, TFile, TFolder, normalizePath } from "obsidian";
@@ -43,6 +45,16 @@ export function sanitizeFileName(name: string): string {
 function baseName(path: string): string {
 	const last = path.split("/").pop() ?? path;
 	return last.replace(/\.pdf$/i, "");
+}
+
+/** FNV-1a, base36 — only used to break a same-basename collision deterministically. */
+function shortHash(value: string): string {
+	let hash = 2166136261;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(36).padStart(6, "0").slice(-6);
 }
 
 /** Weighted geometric overlap between two rect sets on the same page. */
@@ -101,6 +113,8 @@ interface CacheEntry {
 
 export class ExcerptStore {
 	private cache = new Map<string, CacheEntry>();
+	/** notePath -> pdfPath, so notePathFor() is stable between load() and save(). */
+	private readonly claimed = new Map<string, string>();
 
 	constructor(
 		private app: App,
@@ -112,15 +126,46 @@ export class ExcerptStore {
 
 	notePathFor(pdf: TFile): string {
 		const folder = (this.getSettings().excerptFolder ?? "").trim();
-		let rel = pdf.path.replace(/\.pdf$/i, "");
 		const normalizedFolder = folder ? normalizePath(folder) : "";
-		if (normalizedFolder && (rel === normalizedFolder || rel.startsWith(normalizedFolder + "/"))) {
-			rel = rel.slice(normalizedFolder.length + 1);
+		const name = sanitizeFileName(baseName(pdf.path)) || "PDF";
+		const hint = this.folderHint(pdf);
+		const hash = shortHash(pdf.path);
+
+		const candidates = [`${name}.md`];
+		if (hint) candidates.push(`${name} (${hint}).md`, `${name} (${hint}-${hash}).md`);
+		candidates.push(`${name} (${hash}).md`);
+
+		for (const candidate of candidates) {
+			const path = normalizePath([normalizedFolder, candidate].filter(Boolean).join("/"));
+			if (this.ownsNotePath(path, pdf)) return path;
 		}
-		const parts = rel.split("/").filter(Boolean).map(sanitizeFileName);
-		const name = parts.pop() ?? baseName(pdf.path);
-		const segments = [normalizedFolder, ...parts, `${name}.md`].filter((s) => s && s.length);
-		return normalizePath(segments.join("/"));
+		// Unreachable in practice: the hash candidate is unique to this PDF.
+		return normalizePath([normalizedFolder, `${name} (${hash}).md`].filter(Boolean).join("/"));
+	}
+
+	/** The PDF's own parent folder name, used only to disambiguate a clash. */
+	private folderHint(pdf: TFile): string {
+		const parts = pdf.path.split("/").filter(Boolean);
+		parts.pop();
+		return sanitizeFileName(parts.pop() ?? "");
+	}
+
+	/**
+	 * True when `path` is free, already backs this PDF, or holds a note with no
+	 * `source` at all (hand-created) — reusing a free/own path every call is what
+	 * keeps the mapping stable between load() and save().
+	 */
+	private ownsNotePath(path: string, pdf: TFile): boolean {
+		const claimedBy = this.claimed.get(path);
+		if (claimedBy !== undefined) return claimedBy === pdf.path;
+
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (!(existing instanceof TFile)) return true;
+
+		const fromCache = this.cache.get(path)?.data.source;
+		const fromVault = this.app.metadataCache.getFileCache(existing)?.frontmatter?.source;
+		const source = fromCache || (typeof fromVault === "string" ? fromVault : "");
+		return !source || normalizePath(source) === pdf.path;
 	}
 
 	titleFor(pdf: TFile): string {
@@ -181,6 +226,7 @@ export class ExcerptStore {
 		data.title = data.title || this.titleFor(pdf);
 		if (!data.tags?.length) data.tags = this.getSettings().tags;
 
+		this.claimed.set(path, pdf.path);
 		this.cache.set(path, { mtime: file.stat.mtime, size: file.stat.size, data });
 		return data;
 	}
@@ -210,6 +256,7 @@ export class ExcerptStore {
 		}
 
 		const stored = { ...data, source: pdf.path, updated: Date.now() };
+		this.claimed.set(path, pdf.path);
 		this.cache.set(path, { mtime: file.stat.mtime, size: file.stat.size, data: stored });
 		return file;
 	}
@@ -285,6 +332,7 @@ export class ExcerptStore {
 
 	async clearCache(): Promise<void> {
 		this.cache.clear();
+		this.claimed.clear();
 	}
 
 	invalidate(path: string): void {
