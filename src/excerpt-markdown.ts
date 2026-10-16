@@ -413,14 +413,22 @@ export function parseExcerptFile(content: string): ExcerptFileData {
 			? `e${shortHash(`${page}\u0000${image}`)}`
 			: excerptIdFor(page, text);
 		const fromHeader = parseTimestamp(header[3]);
+		// The callout header only carries minute precision, so the exact
+		// timestamp stored in the payload wins when it is usable; the header is
+		// only a fallback for notes written before the metadata moved into the
+		// %% comment.
+		const storedCreated = Number(payload.created);
+		const created =
+			Number.isFinite(storedCreated) && storedCreated > 0
+				? storedCreated
+				: (fromHeader ?? Date.now());
 
 		excerpts.push({
 			id: typeof payload.id === "string" && payload.id ? payload.id : fallbackId,
 			page,
 			text,
 			rects: image ? [] : rectsFromPayload(payload.rects),
-			created:
-				fromHeader ?? (Number.isFinite(Number(payload.created)) ? Number(payload.created) : Date.now()),
+			created,
 			selection: image ? null : typeof payload.sel === "string" && payload.sel ? payload.sel : null,
 			image: image ?? null,
 		});
