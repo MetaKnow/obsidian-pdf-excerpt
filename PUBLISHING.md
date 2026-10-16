@@ -192,6 +192,14 @@ gh release create 1.0.0 \
 | 移动端插件却标 `isDesktopOnly` | 本插件依赖 Electron 的 PDF 视图，标 `true` 正确 |
 | 提交了构建产物 `main.js` 到仓库 | 已 `.gitignore` |
 | 用 `innerHTML` 拼 HTML（XSS 风险）| 全部用 `createEl` / `createDiv` / `setText` |
+| 描述结尾没有句号 | 官方硬性要求必须以 `.` 结尾，已补 |
+| README 里没有英文内容 | 目录站面向英文用户，`README.md` 已改为英文，中文版放在 `README.zh.md` |
+| 直接访问文件系统（Node `fs`）| 政策**允许**，但必须在 README 里说明用途；已在「Privacy and file access」一节写清 |
+
+> **复核流程**：目录站每次发 Release 后会重新扫描，结果分成 manifest / release 资源 / 源码 /
+> 构建校验四组，每条分级为 error / warning / recommendation / pass。改完仓库后有两种触发方式：
+> 在条目的 **⋯** 菜单里选 **Request review** 立即重扫（不必发新版本），
+> 或选 **Review branch → Run preview scan**，先看扫描结果再决定要不要发新版本。
 
 还有一个隐性要求：**插件不能自动发起网络请求**。本插件完全离线，
 只读写你仓库里的 markdown 文件，不依赖任何服务器。

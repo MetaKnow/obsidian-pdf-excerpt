@@ -1,184 +1,199 @@
-# PDF Excerpt · PDF 摘录
+# PDF Excerpt
 
 [![GitHub release](https://img.shields.io/github/v/release/MetaKnow/obsidian-pdf-excerpt)](https://github.com/MetaKnow/obsidian-pdf-excerpt/releases)
 [![License](https://img.shields.io/github/license/MetaKnow/obsidian-pdf-excerpt)](LICENSE)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.5.0%2B-7C3AED)
 
-**EN** · Right-click the text you select in a PDF and it becomes a Markdown excerpt in a note
-dedicated to that PDF — page number, exact position, and a highlight that stays on the original
-page. Every PDF gets one self-contained folder (note + a copy of the PDF + its screenshots) that
-you can move, sync or export as a whole. Duplicates are blocked, a side panel lists and jumps,
-and one command exports everything.
+**English** · [中文](README.zh.md)
 
-**中文** · 在 Obsidian 里读 PDF：**选中文字 → 右键 →「加入摘录」**。这段文字带着页码和精确位置，
-写进这篇 PDF 专属的 Markdown 笔记，同时在原文上留下可点击的高亮。每篇 PDF 一个自包含文件夹
-（笔记 + PDF 副本 + 全部截图），整体搬走、同步、导出都不会丢东西。
+Select text in a PDF, right-click, and it becomes a Markdown excerpt in a note dedicated to that
+PDF — with the page number, the exact position, and a highlight that stays on the original page.
+Every PDF gets one self-contained folder (note + a copy of the PDF + its screenshots) that you can
+move, sync, or hand to someone else as a whole. Duplicates are blocked, a side panel lists and
+jumps, and one command exports everything.
 
-> 仅支持**桌面端**（Windows / macOS / Linux）。Obsidian 的 PDF 阅读器本身也只提供桌面端。
+> **Desktop only** (Windows / macOS / Linux). Obsidian's built-in PDF viewer is desktop-only too.
 
 ---
 
-## 它把什么事变简单了
+## What it simplifies
 
-在 Obsidian 里读 PDF，原本的流程是：切窗口 → 复制 → 回到笔记 → 粘贴 → 手写页码和出处。
-读几篇论文之后，笔记里全是不知道从哪来的文段。
+Reading a PDF in Obsidian usually means: switch windows → copy → switch back → paste → type the
+page number by hand. After a few papers your notes are full of quotes with no traceable source.
 
-这个插件把整件事压成一步，并且顺手把出处、回跳、原文留痕、截图、导出都解决了：
+This plugin collapses that into one step, and takes care of the source, the jump back, the mark on
+the original, screenshots, and export along the way:
 
-| | 手工复制粘贴 | **PDF 摘录** |
+| | Manual copy & paste | **PDF Excerpt** |
 | --- | --- | --- |
-| 摘录一段话 | 切窗口、复制、粘贴、手写页码 | 选中 → 右键，结束 |
-| 回到原文 | 自己翻回去找 | 点链接，自动跳到那一页并高亮 |
-| 原文有没有摘过 | 看不出来 | 摘过的段落保持高亮 |
-| 出处会不会丢 | 换个仓库、改个文件名就断 | 链接 + 坐标写在笔记里，笔记自包含 |
-| 图和表格 | 手动截图、命名、插入 | 框选一下，全分辨率存进笔记 |
-| 攒到 100 条以后 | 只能靠全文搜索 | 侧边面板逐条定位 + 一键导出 |
+| Excerpt a passage | Switch windows, copy, paste, type the page | Select → right-click, done |
+| Get back to the source | Scroll around and hunt for it | Click the link, it jumps to that page and highlights |
+| Has this been excerpted before? | No way to tell | Excerpted passages stay highlighted |
+| Does the source survive? | Breaks on rename or move | Link + coordinates live in the note; the note is self-contained |
+| Figures and tables | Screenshot, name, and insert by hand | Drag a box; saved at full resolution |
+| After 100 excerpts | Full-text search only | Side panel to jump through them, plus one-command export |
 
 ---
 
-## 核心功能
+## Features
 
-### 1. 一步摘录，出处自动带上
+### 1. One-step excerpt with the source attached
 
-选中任意文字 → 右键 →「加入摘录」。插件从 pdf.js 的文字层里取出选区，按行合并成矩形、
-归一化成 0~1 的坐标，然后 ① 写进笔记 ② 在原文上画高亮 ③ 闪烁一下确认。
+Select any text → right-click → **Add to excerpts**. The plugin reads the selection from pdf.js's
+text layer, merges it into per-line rectangles and normalizes them to 0–1 coordinates, then
+① writes the note, ② draws the highlight on the original page, ③ flashes to confirm.
 
-- 只在你**确实选中了文字**时才接管右键菜单，其他情况 Obsidian 原生菜单照旧
-- 摘录的是文字，落到笔记里是 Obsidian 的 **quote callout**，阅读视图下好看，也能被 Dataview 查询
-- 同一段内容摘第二次会被拦下并提示「这段内容已经摘录过了」
+- The context menu is only taken over when you **actually have text selected**; otherwise Obsidian's own menu appears unchanged.
+- The excerpt is text, stored as an Obsidian **quote callout** — it reads well in Reading view and is queryable with Dataview.
+- Selecting the same passage twice is intercepted with "This passage has already been excerpted".
 
-### 2. 每条摘录都能点回原文
+### 2. Every excerpt links back to the page
 
-每段摘录后面跟着一条 Obsidian **原生**的 PDF 子路径链接：
-
-```
-[[论文/Attention Is All You Need.pdf#page=3&selection=12,0,14,44|Attention Is All You Need, 第 3 页]]
-```
-
-`#page=N&selection=a,b,c,d` 是 Obsidian 自带的能力，**不依赖本插件**——即使哪天禁用插件，
-链接照样能跳页并高亮。链接由 `app.fileManager.generateMarkdownLink()` 生成，所以会遵循你设置的
-「新链接格式」（Wikilink / 相对路径 / 绝对路径）。
-
-### 3. 原文上留下看得见的高亮
-
-摘录过的段落在 PDF 里以高亮块显示，颜色可配。打开 PDF 时插件会读回坐标自动重绘；
-pdf.js 是懒渲染的，插件监听每页的 `data-loaded`，页面一渲染出来就补画，所以刚打开也能立刻看到。
-
-高亮层是 `pointer-events: none` 的覆盖层，不会妨碍你继续在 PDF 里选中文字。
-
-### 4. 每篇 PDF 一个自包含文件夹（最实用的一点）
+Each excerpt is followed by a **native** Obsidian PDF sub-path link:
 
 ```
-摘录知识库/
+[[papers/Attention Is All You Need.pdf#page=3&selection=12,0,14,44|Attention Is All You Need, page 3]]
+```
+
+`#page=N&selection=a,b,c,d` is built into Obsidian and **does not depend on this plugin** — even if
+you disable the plugin later, those links still jump to the page and highlight the passage. Links
+are produced by `app.fileManager.generateMarkdownLink()`, so they follow your "New link format"
+setting (Wikilink / relative / absolute).
+
+### 3. A visible highlight on the original page
+
+Passages you have excerpted are shown as highlight blocks in the PDF, in a configurable color.
+When you open a PDF the plugin reads the coordinates back and repaints them; pdf.js renders lazily,
+so the plugin watches each page's `data-loaded` and paints as soon as a page appears — highlights
+are there immediately, not only after scrolling.
+
+The highlight layer is a `pointer-events: none` overlay, so it never gets in the way of selecting
+more text in the PDF.
+
+### 4. One self-contained folder per PDF (the most practical part)
+
+```
+PDF Excerpts/
 └── Attention Is All You Need/
-    ├── Attention Is All You Need.md                          ← 摘录笔记
-    ├── Attention Is All You Need.pdf                         ← 自动复制进来的原文副本
-    └── Attention Is All You Need-第3页-20240506151200.png      ← 这篇 PDF 的截图
+    ├── Attention Is All You Need.md                        ← the excerpt note
+    ├── Attention Is All You Need.pdf                       ← the PDF, copied in automatically
+    └── Attention Is All You Need-page3-20240506151200.png  ← screenshots for this PDF
 ```
 
-给一篇 PDF 加**第一条**摘录时，插件会把 PDF 本身也复制一份进这个文件夹，笔记的 `source`
-和所有跳转链接都指向副本（只复制一次）。于是这个文件夹是**自包含**的：
+When you add the **first** excerpt for a PDF, the plugin also copies the PDF itself into that
+folder, and the note's `source` plus every jump link point at the copy (it is copied only once).
+The folder is therefore **self-contained**:
 
-- 整个文件夹拷到别的仓库、丢进同步盘、或导出给别人，笔记和原文都还在
-- 原始 PDF 之后被移动、改名、删掉都不影响
-- PDF 本来就在摘录文件夹里，或 PDF 在仓库之外（`file:` 打开）时同样成立
+- Copy the folder into another vault, into a sync drive, or send it to someone — note and source are both there.
+- The original PDF can later be moved, renamed, or deleted without breaking anything.
+- This also holds when the PDF already lives inside the excerpt folder, or when it is **outside the vault** (opened through `file:`).
 
-同名 PDF 不会互相覆盖：第二篇的子文件夹会带上它原来的目录名消歧
-（`摘录知识库/报告 (归档)/报告.md`），仍然冲突时再附加一个路径短哈希。
+Same-named PDFs never overwrite each other: the second one's folder is disambiguated with its
+original parent folder name (`PDF Excerpts/Report (archive)/Report.md`), and a short path hash is
+appended if that still collides.
 
-从旧版本升级、笔记还平铺着的话，执行一次命令
-**「整理摘录笔记（移入以 PDF 命名的子文件夹）」** 即可批量搬家，并把找得到的 PDF 一并复制进去。
+If you upgraded from an older version and your notes are still flat, run the command
+**"Tidy excerpt notes into folders"** — it moves them into their per-PDF folders and copies the
+PDFs along with them.
 
-### 5. 截图摘录：图、表格、公式
+### 5. Screenshot excerpts: figures, tables, formulas
 
-面板上点截图按钮 → 在 PDF 页面上拖拽框选 → 松手即入库。图片直接从页面 canvas 裁切，
-**全分辨率**，不受当前缩放影响；`Esc` 取消。
+Click the screenshot button in the panel → drag a box over the PDF page → release to save. The image
+is cropped straight from the page canvas at **full resolution**, independent of the current zoom;
+press `Esc` to cancel.
 
-截图不记录位置、不参与重复判断，所以同一页可以截很多张。删除截图摘录时，对应的 PNG 会一并删除。
+Screenshots record no position and take no part in duplicate detection, so you can capture as many
+as you like from one page. Deleting a screenshot excerpt also deletes its PNG.
 
-### 6. 侧边面板 + 一键导出
+### 6. Side panel + one-command export
 
-面板跟随当前打开的 PDF 自动切换，列出这篇 PDF 的全部摘录：
+The panel follows the PDF you have open and lists all of its excerpts:
 
-- **点任意卡片 = 跳回 PDF 原文**（截图卡片跳到截图所在页并闪烁页面边框）
-- 每张卡片可定位、复制文本、删除
-- 标题栏右到左：截图、打开摘录笔记、**导出整个摘录文件夹**、刷新
+- **Click any card to jump back to the PDF** (a screenshot card jumps to its page and flashes the page border).
+- Each card can be located, its text copied, or deleted.
+- Title bar, right to left: screenshot, open excerpt note, **export the whole excerpt folder**, refresh.
 
-导出走**系统对话框**，由你选保存位置，导出后不自动打开：
+Export goes through a **system dialog** where you choose the destination, and nothing is opened
+afterwards:
 
-- 面板的「导出」按钮导出的是这篇 PDF 的**整个文件夹**（笔记 + 全部截图），不是单个 md
-- 命令面板的「导出全部 PDF 摘录为 …」把全库汇总成 **Markdown / CSV / JSON / HTML**
-
----
-
-## 安装
-
-**从社区插件市场安装**（已上架后）：设置 → 第三方插件 → 浏览 → 搜索 `PDF Excerpt`。
-
-**手动安装**：
-
-1. 从 [Releases](https://github.com/MetaKnow/obsidian-pdf-excerpt/releases) 下载 `main.js`、`manifest.json`、`styles.css`
-2. 放进 `<你的仓库>/.obsidian/plugins/pdf-excerpt/`
-3. Obsidian → 设置 → 第三方插件 → 关闭「受限模式」→ 启用 **PDF Excerpt**
+- The panel's export button ships **the PDF's whole folder** (note + all screenshots), not a single `.md`.
+- The command palette's "Export all PDF excerpts as …" aggregates the entire vault into **Markdown / CSV / JSON / HTML**.
 
 ---
 
-## 快速上手
+## Installation
 
-1. 在 Obsidian 里打开任意 PDF
-2. 选中一段文字（跨行、整段都可以）
-3. 右键 → **加入摘录**
-4. 搞定。笔记会在主编辑区以**阅读视图**打开（可在设置里关掉），之后每条摘录都追加进同一篇笔记
+**From the community plugin directory** (once listed): Settings → Community plugins → Browse →
+search for `PDF Excerpt`.
 
-面板入口：左侧功能区的荧光笔图标、右侧边栏顶部的按钮，或命令面板执行 **PDF 摘录: 打开 PDF 摘录面板**。
+**Manually:**
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from [Releases](https://github.com/MetaKnow/obsidian-pdf-excerpt/releases).
+2. Put them in `<your vault>/.obsidian/plugins/pdf-excerpt/`.
+3. Obsidian → Settings → Community plugins → turn off Restricted mode → enable **PDF Excerpt**.
 
 ---
 
-## 命令面板
+## Quick start
 
-| 命令 | 说明 |
+1. Open any PDF in Obsidian.
+2. Select a passage (multi-line and whole paragraphs are fine).
+3. Right-click → **Add to excerpts**.
+4. Done. The note opens in the main editor area in **Reading view** (can be turned off in settings), and every later excerpt is appended to the same note.
+
+Panel entry points: the highlighter icon in the left ribbon, the button at the top of the right
+sidebar, or the command **"PDF Excerpt: Open PDF excerpt panel"**.
+
+> The plugin's interface is currently in Simplified Chinese. Command names are given below with
+> their English meaning so you can find them.
+
+---
+
+## Commands
+
+| Command (as shown in the palette) | What it does |
 | --- | --- |
-| 将选中的 PDF 文字加入摘录 | 等价于右键「加入摘录」 |
-| 截图并加入摘录笔记 | 在 PDF 页面上框选截图 |
-| 打开当前 PDF 的摘录笔记 | 打开 / 创建对应笔记 |
-| 打开 PDF 摘录面板 | 显示右侧面板 |
-| 显示 / 隐藏 PDF 中的摘录高亮 | 临时隐藏所有高亮 |
-| 导出全部 PDF 摘录为 Markdown / CSV / JSON / HTML | 汇总全库摘录 |
-| 迁移旧版摘录笔记（改为隐藏的几何数据） | 把早期笔记里可见的 `<!-- -->` 几何注释改写成隐藏的 `%%` 形式 |
-| 整理摘录笔记（移入以 PDF 命名的子文件夹） | 把平铺的旧笔记搬进各自子文件夹，并把 PDF 复制进去 |
+| 将选中的 PDF 文字加入摘录 *(Add selected PDF text to excerpts)* | Same as the right-click action |
+| 截图并加入摘录笔记 *(Screenshot into the excerpt note)* | Drag a box on the PDF page to capture |
+| 打开当前 PDF 的摘录笔记 *(Open the excerpt note for this PDF)* | Opens or creates the note |
+| 打开 PDF 摘录面板 *(Open the PDF excerpt panel)* | Reveals the side panel |
+| 显示 / 隐藏 PDF 中的摘录高亮 *(Show / hide excerpt highlights)* | Temporarily hides all highlights |
+| 导出全部 PDF 摘录为 Markdown / CSV / JSON / HTML *(Export all PDF excerpts as …)* | Aggregates the whole vault |
+| 迁移旧版摘录笔记（改为隐藏的几何数据） *(Migrate legacy excerpt notes)* | Rewrites the visible `<!-- -->` geometry comments of early notes into hidden `%%` form |
+| 整理摘录笔记（移入以 PDF 命名的子文件夹） *(Tidy excerpt notes into folders)* | Moves flat notes into their per-PDF folders and copies the PDFs in |
 
-## 设置
+## Settings
 
-| 设置项 | 默认值 | 说明 |
+| Setting | Default | Notes |
 | --- | --- | --- |
-| 摘录文件夹 | `摘录知识库` | 每篇 PDF 的摘录笔记存放位置，留空为仓库根目录 |
-| 导出文件夹 | `摘录知识库/导出` | 拿不到系统对话框时的兜底导出位置 |
-| 首次摘录时自动打开笔记 | 开 | 某篇 PDF 第一次产生摘录时，在主编辑区打开笔记 |
-| 以阅读视图打开摘录笔记 | 开 | 打开摘录笔记时用阅读视图而不是编辑模式 |
-| 摘录后闪烁提示 | 开 | 摘录成功后闪烁对应的原文位置 |
-| 高亮颜色 | `#ffd400` | PDF 中摘录区域的高亮色 |
-| 显示侧边栏图标 | 开 | 显示面板按钮（左侧功能区 + 右侧边栏顶部）|
+| 摘录文件夹 *(Excerpt folder)* | `摘录知识库` | Where each PDF's excerpt note is stored; leave empty for the vault root |
+| 导出文件夹 *(Export folder)* | `摘录知识库/导出` | Fallback destination when no system dialog is available |
+| 首次摘录时自动打开笔记 *(Open the note on the first excerpt)* | On | Opens the note in the main editor area the first time a PDF gets an excerpt |
+| 以阅读视图打开摘录笔记 *(Open excerpt notes in Reading view)* | On | Uses Reading view instead of edit mode |
+| 摘录后闪烁提示 *(Flash after excerpting)* | On | Flashes the corresponding spot in the original |
+| 高亮颜色 *(Highlight color)* | `#ffd400` | Highlight color for excerpted areas in the PDF |
+| 显示侧边栏图标 *(Show ribbon icons)* | On | Shows the panel buttons (left ribbon + top of the right sidebar) |
 
-打开摘录笔记时会复用已经开着的那个标签页，不会重复开页；「以阅读视图打开」**优先于** Obsidian
-全局的「新标签默认视图」设置。
+Opening an excerpt note reuses the tab that is already open instead of opening a second one;
+"Open in Reading view" **takes precedence over** Obsidian's global "Default view for new tabs".
 
 ---
 
-## 笔记格式
+## Note format
 
 ```markdown
 ---
 type: pdf-excerpt
-source: "摘录知识库/Attention Is All You Need/Attention Is All You Need.pdf"
+source: "PDF Excerpts/Attention Is All You Need/Attention Is All You Need.pdf"
 title: "Attention Is All You Need"
 count: 2
 created: "2024-05-06T07:08:00.000Z"
 updated: "2024-05-06T07:09:12.000Z"
 ---
 
-# 摘录 · Attention Is All You Need
+# 摘录 · Attention Is All You Need          ← "Excerpts · <title>"
 
-> [!quote] 第 3 页 · 2024-05-06 15:08
+> [!quote] 第 3 页 · 2024-05-06 15:08        ← "page 3 · <date>"
 > The dominant sequence transduction models are based on complex recurrent
 > or convolutional neural networks.
 >
@@ -186,69 +201,87 @@ updated: "2024-05-06T07:09:12.000Z"
 
 %% pdf-excerpt {"id":"e4f2a91","page":3,"created":1714979280000,"rects":[[0.1103,0.1544,0.7831,0.0161]],"sel":"12,0,14,44"} %%
 
-> [!quote] 截图 · 第 20 页 · 2024-05-06 15:12
-> ![[摘录知识库/Attention Is All You Need/Attention Is All You Need-第20页-20240506151200.png]]
+> [!quote] 截图 · 第 20 页 · 2024-05-06 15:12   ← "screenshot · page 20 · <date>"
+> ![[PDF Excerpts/Attention Is All You Need/Attention Is All You Need-第20页-20240506151200.png]]
 ```
 
-- 正文用 quote callout 包裹：阅读视图里好看，也能被 Dataview 查询
-- 反链由 `app.fileManager.generateMarkdownLink()` 生成，所以会遵循你设置的「新链接格式」。
-  笔记和 PDF 副本在同一个文件夹里，因此默认设置下链接就是文件名本身（`[[Attention Is All You Need.pdf#page=3&…]]`）
-- 那行 `%% … %%` 是 Obsidian 的**注释语法**，阅读视图和实时预览里完全不显示，只有源码模式可见。
-  高亮坐标就存在里面，所以**笔记是自包含的**：正文干干净净，把笔记复制到别的仓库，高亮信息也跟着走
-- 坐标是相对页面 canvas 的归一化值（0~1），所以缩放、改窗口大小、重新渲染都不会错位
-- 截图摘录只有 `id` 和页码，没有 `rects`，也不参与重复判断
+- The body is wrapped in quote callouts: it looks right in Reading view and is queryable with Dataview.
+- Back-links come from `app.fileManager.generateMarkdownLink()`, so they follow your "New link
+  format" setting. Because the note and the PDF copy sit in the same folder, the default setting
+  produces a bare filename: `[[Attention Is All You Need.pdf#page=3&…]]`.
+- The `%% … %%` line uses Obsidian's **comment syntax** — invisible in Reading view and Live
+  Preview, visible only in source mode. The highlight coordinates live inside it, which is what
+  makes the **note self-contained**: the body stays clean, and copying the note to another vault
+  carries the highlight data with it.
+- Coordinates are normalized (0–1) against the page canvas, so zooming, resizing the window, or
+  re-rendering never shifts them.
+- A screenshot excerpt has only an `id` and a page number — no `rects` — and takes no part in duplicate detection.
 
 ---
 
-## 已知限制与兼容性
+## Privacy and file access
 
-- **仅桌面端**。Obsidian 的 PDF 阅读器只在桌面端提供。
-- 每次摘录请在**同一个页面内**选择；跨页拖选暂不支持。
-- Obsidian 没有为 PDF 阅读器提供公开 API，本插件依赖部分内部 DOM 结构（`.textLayer`、`.page`、
-  pdf.js 的渲染时机），所有访问都做了防御性判断，形状不符时安静地退化为「什么也不做」而不是报错。
-  如果 Obsidian 大版本更新后 PDF 阅读器结构变化，最可能受影响的是高亮层与选区坐标；
-  右键菜单与笔记写入依赖的路径相对稳定。
-- 右键接管利用的是 Obsidian 自身处理函数开头的 `if (e.defaultPrevented) return;`：插件在
-  `document` 上以**捕获阶段**监听 `contextmenu`，只在确实有选区时 `preventDefault()`。
+- **No network.** The plugin makes no network requests, has no telemetry, requires no account, and uploads nothing.
+- **During normal use it only reads and writes your vault, through Obsidian's own `Vault` API.** Excerpts, highlights, and screenshots are all handled inside the vault.
+- **The only time it touches files outside the vault is when you export** — this is the only place the plugin uses Node's `fs` module. The panel's "export the excerpt folder" button opens the operating system's folder picker (`electron.dialog`, falling back to `@electron/remote`) and **you choose the destination yourself**; only after you confirm does the plugin copy that PDF's excerpt folder there with `fs.promises.cp()`. Outside of that action no file outside the vault is ever read or written, and a destination path is never chosen for you. If you never use the export buttons, no code outside the vault API runs.
+- The plugin is marked `isDesktopOnly: true` precisely because it uses Node/Electron APIs — as is Obsidian's own PDF viewer.
 
-## 开发
+---
+
+## Known limitations
+
+- **Desktop only.** Obsidian provides its PDF viewer on desktop only.
+- Select within **one page at a time**; dragging across pages is not supported yet.
+- Obsidian exposes no public API for its PDF viewer, so the plugin relies on some internal DOM
+  shape (`.textLayer`, `.page`, pdf.js's render timing). Every access is defensive and degrades
+  quietly to "do nothing" rather than throwing. If a future major Obsidian release changes the PDF
+  viewer's structure, the highlight layer and selection coordinates are the most likely to be
+  affected; the context menu and note writing rely on much more stable paths.
+- The context menu takeover works because Obsidian's own handler starts with
+  `if (e.defaultPrevented) return;`: the plugin listens for `contextmenu` on `document` in the
+  **capture** phase and calls `preventDefault()` only when there really is a selection.
+
+## Development
 
 ```bash
 npm install
-npm run dev        # 监听构建
+npm run dev        # watch build
 npm run typecheck  # tsc --noEmit
-npm test           # node --test（纯函数单测）
-npm run build      # 类型检查 + 生产构建
-npm run deploy     # 把产物同步到 Obsidian 插件目录
+npm test           # node --test (pure-function unit tests)
+npm run build      # type check + production build
+npm run deploy     # sync the artifacts to your Obsidian plugin folder
 
-# 端到端冒烟测试：用 jsdom 加载真正的 main.js，跑完整的用户流程
+# End-to-end smoke test: loads the real main.js under jsdom and runs full user flows
 cd tools/smoke && npm install && node harness.cjs
 ```
 
-> `npm run build` 只把产物写到仓库根目录，而 Obsidian 加载的是仓库里那份**拷贝**。改完代码记得
-> `npm run deploy -- --to "<你的仓库>/.obsidian/plugins/pdf-excerpt"`（也可以把目标目录写进仓库根
-> 目录的 `.deploy-target`，之后直接 `npm run deploy`），再回 Obsidian 执行一次「重新加载应用」。
+> `npm run build` only writes the artifacts to the repository root, while Obsidian loads the
+> **copy** inside your vault. After changing code, run
+> `npm run deploy -- --to "<your vault>/.obsidian/plugins/pdf-excerpt"` (or put the target in
+> `.deploy-target` at the repository root and just run `npm run deploy`), then reload the app in
+> Obsidian.
 
-冒烟测试不需要打开 Obsidian：它伪造一个极简 vault、PDF 阅读器 DOM 和 `obsidian` 模块，然后依次
-验证右键菜单、笔记落盘与路径、PDF 副本、去重、高亮覆盖层、删除、截图、导出、侧边栏按钮以及
-`onunload` 清理是否干净。
+The smoke test needs no Obsidian window: it fakes a minimal vault, PDF viewer DOM, and `obsidian`
+module, then checks the context menu, note paths on disk, the PDF copy, duplicate detection, the
+highlight overlay, deletion, screenshots, export, the sidebar buttons, and whether `onunload`
+cleans up.
 
-源码结构：
+Source layout:
 
-| 文件 | 职责 |
+| File | Responsibility |
 | --- | --- |
-| `src/main.ts` | 插件入口：命令、右键菜单、高亮生命周期、导出、截图入库 |
-| `src/screenshot.ts` | 在 PDF 页面上框选并从页面 canvas 裁出 PNG |
-| `src/pdf-view.ts` | 与 Obsidian PDF 阅读器内部结构对接、选区捕获 |
-| `src/highlight-layer.ts` | PDF 页面内的摘录高亮覆盖层 |
-| `src/excerpt-markdown.ts` | 摘录笔记的序列化 / 解析（纯函数，可单测） |
-| `src/excerpt-store.ts` | 笔记定位、读写、去重、缓存、PDF 副本 |
-| `src/sidebar.ts` | 右侧摘录面板 |
-| `src/export.ts` | 汇总导出（Markdown / CSV / JSON / HTML） |
-| `src/settings.ts` | 设置页 |
+| `src/main.ts` | Plugin entry: commands, context menu, highlight lifecycle, export, screenshots |
+| `src/screenshot.ts` | Drag a box on a PDF page and crop a PNG from the page canvas |
+| `src/pdf-view.ts` | Integration with Obsidian's PDF viewer internals, selection capture |
+| `src/highlight-layer.ts` | The excerpt highlight overlay inside PDF pages |
+| `src/excerpt-markdown.ts` | Serializing / parsing excerpt notes (pure functions, unit tested) |
+| `src/excerpt-store.ts` | Note location, read/write, dedupe, cache, PDF copies |
+| `src/sidebar.ts` | The right-side excerpt panel |
+| `src/export.ts` | Aggregate export (Markdown / CSV / JSON / HTML) |
+| `src/settings.ts` | Settings tab |
 
-发布到社区目录的完整步骤见 [PUBLISHING.md](PUBLISHING.md)。
+See [PUBLISHING.md](PUBLISHING.md) for the release process (in Chinese).
 
-## 许可证
+## License
 
 [MIT](LICENSE)
